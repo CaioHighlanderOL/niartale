@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NiarTale Retro Grimorio</title>
+    <link rel="stylesheet" href="styles.css?v=rpg-core-20260528-2" />
+  </head>
+  <body>
+    <canvas id="sigilCanvas" aria-hidden="true"></canvas>
+
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">NT</div>
+          <div>
+            <p class="eyebrow">Retro RPG HUD</p>
+            <h1>NiarTale Grimorio</h1>
+          </div>
+        </div>
+
+        <label class="search-box">
+          <span>Buscar</span>
+          <input id="searchInput" type="search" placeholder="Personagem, jogador, grupo..." />
+        </label>
+
+        <nav class="primary-nav" aria-label="Navegacao principal">
+          <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+          <button class="nav-btn" data-view="sheet">Ficha</button>
+          <button class="nav-btn" data-view="master">Mestre</button>
+          <button class="nav-btn" data-view="dice">Dados</button>
+        </nav>
+
+        <div class="panel compact">
+          <div class="panel-head">
+            <h2>Fichas</h2>
+            <button id="newCharacterBtn" class="icon-btn" title="Criar nova ficha">+</button>
+          </div>
+          <div id="characterList" class="character-list"></div>
+        </div>
+
+        <div class="storage-note">
+          <strong>Persistencia</strong>
+          <div id="userPanel"></div>
+          <span>Persistencia via Firebase Auth + Firestore. Hosting configurado para SPA com link fixo.</span>
+        </div>
+      </aside>
+
+      <main class="main-stage">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Campanha ativa</p>
+            <input id="campaignName" class="campaign-title" aria-label="Nome da campanha" />
+          </div>
+          <div class="top-actions">
+            <button id="themeToggle" class="ghost-btn" data-master-only>Editar tema</button>
+            <button id="exportJsonBtn" class="ghost-btn" data-master-only>JSON</button>
+            <button id="logoutBtn" class="ghost-btn">Sair</button>
+          </div>
+        </header>
+
+        <section id="dashboardView" class="view"></section>
+        <section id="sheetView" class="view active"></section>
+        <section id="masterView" class="view"></section>
+        <section id="diceView" class="view"></section>
+        <section id="loginView" class="view"></section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js?v=rpg-core-20260528-2" type="module"></script>
+  </body>
+</html>
