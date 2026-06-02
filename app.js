@@ -89,7 +89,7 @@ function defaultCharacter(overrides = {}) {
     ownerName:  state.profile?.displayName || "Jogador",
     player:     state.profile?.displayName || "Jogador",
     campaignId: CAMPAIGN_ID,
-    name: "Nova ficha", className: "Viajante", race: "Humano",
+    name: "Nova ficha", race: "Humano",
     campaign: state.campaign?.name || "Campanha Principal",
     group: "Grupo principal",
     flavor: "* A alma pulsa como uma pagina viva.",
@@ -248,7 +248,6 @@ async function migrateLegacyLocalDataOnce() {
           ownerName: c.ownerName || state.profile.displayName,
           player:    c.player    || state.profile.displayName,
           name:      c.name      || "Ficha importada",
-          className: c.className || c.class    || "Viajante",
           race:      c.race      || c.ancestry || "Humano",
           lv: Number(c.lv || 1),
           notes: c.notes || "", history: c.history || "",
@@ -498,7 +497,6 @@ function renderCharacterCard(c) {
         : node("div", "pixel-soul", [node("span","","♥")]),
     ]),
     field("Nome",    c.name,      (v) => updateChar(c, { name: v }),      { big:true }),
-    field("Classe",  c.className, (v) => updateChar(c, { className: v })),
     field("Raca",    c.race,      (v) => updateChar(c, { race: v }),      { refresh:true }),
     field("Jogador", c.player,    (v) => updateChar(c, { player: v }),    { disabled: !isMaster() }),
     field("Frase",   c.flavor,    (v) => updateChar(c, { flavor: v }),    { textarea:true }),
@@ -991,33 +989,94 @@ function resourceBars(c) {
 }
 
 function excelCalc(c = selectedCharacter()) {
-  const race    = norm(c.race);
-  const subRace = norm(customFieldVal(c, "Sub-raca") || "");
+
+  // ── Contexto ────────────────────────────────────────────────────────────────
+  const race      = norm(c.race);
+  const subRace   = norm(customFieldVal(c, "Sub-raca") || "");
   const isMonster = race === "monstro";
   const isHuman   = race === "humano";
   const raceBase  = (isHuman || isMonster) ? 1 : 0;
-  const buf = c.buffs || {};
-  const base = (k) => Math.trunc(Number(c.attributes[k]?.value || 0) / 4);
-  const boost = (c.conditions?.hateBoost ? 30 : 0) + (c.conditions?.inversion ? 14 : 0);
+  const buf       = c.buffs || {};
+  const base      = (k) => Math.trunc(Number(c.attributes[k]?.value || 0) / 4);
+  const hate      = c.conditions?.hateBoost ?? false;
+  // boost: efeito de HATE/Inversão nos mods de atributo (H15–H23)
+  // hateRD: efeito de HATE nas reduções de dano (X15, X16) — valor diferente (+16 vs +30)
+  const boost     = (hate ? 30 : 0) + (c.conditions?.inversion ? 14 : 0);
+  const hateRD    = hate ? 16 : 0;
 
+  // ── Tabela de bônus por sub-raça ─────────────────────────────────────────────
+  // Fonte: células H15–X16 da Planilha Original.xlsx (aba Ficha).
+  // Cada entrada declara apenas os deltas não-zero da sub-raça.
+  // Campos ausentes valem 0. Adicionar nova sub-raça = nova linha aqui.
+  //
+  // suppressForBuf: se true, buf.for é ignorado para esta sub-raça (planilha H15:
+  //   IF(G8="Réptil", 6, 0+W6) — Réptil recebe valor fixo em vez do buff manual).
+  // hpZero: HP máximo = 0, ignorando toda a fórmula e buf.hp (K24 Elemental).
+  // ppDouble: base do PP máximo × 2; buf.pp somado depois, não dobrado (K27 Elemental).
+  // hpBonus: "con" → adiciona mods.con ao HP (K24 Alcadethes usa H17 = CON mod).
+  // caBonus: delta direto na C.A. além de mods.agi (F26).
+  //   Réptil tem dois IFs separados na planilha (+2 e -6, líquido -4) —
+  //   preservados como dois campos distintos para auditabilidade.
+  const SR = {
+    //            forMod  conMod  agiMod  magMod  hpPen  hpBonus     ppDouble  hpZero  caBonus1  caBonus2  blockPen  dodgePen  rdFis  rdMag  suppressForBuf
+    anfibio:   { forMod:2,               agiMod:2,                                               caBonus1:0,                          rdFis:6,  rdMag:6              },
+    alcadethes:{ forMod:6,               agiMod:-3, magMod:6,                hpBonus:"con",                caBonus1:0,                                              },
+    reptil:    { forMod:6,                                                                         caBonus1:2, caBonus2:-6,  dodgePen:6, rdFis:22, rdMag:22, suppressForBuf:true },
+    esqueleto: {                          agiMod:5,           hpPen:10,                           caBonus1:0,                                                       },
+    parasita:  {           conMod:-10,   agiMod:6,           hpPen:10,                            caBonus1:7, blockPen:5,                                           },
+    aranha:    {                          agiMod:4,                                               caBonus1:0,                                                       },
+    elemental: {                                                              hpZero:true, ppDouble:true,                                                            },
+  };
+  const sr = SR[subRace] ?? {};
+
+  // ── Modificadores de atributo (H15–H23) ──────────────────────────────────────
   const mods = {
-    for: base("for") + raceBase + boost + (subRace==="anfibio"?2:0) + (subRace==="reptil"?4:0) + Number(buf.for||0),
-    con: base("con") + raceBase + boost - (subRace==="parasita"?10:0) + Number(buf.con||0),
-    agi: base("agi") + raceBase + boost + (subRace==="esqueleto"?4:0) + (subRace==="anfibio"?2:0) - (subRace==="alcadethes"?3:0) + (subRace==="parasita"?4:0) + (subRace==="aranha"?6:0) + Number(buf.agi||0),
+    // H15 — Réptil recebe forMod fixo sem buf.for; demais sub-raças recebem buf.for
+    for: base("for") + raceBase + boost + (sr.forMod ?? 0) + (sr.suppressForBuf ? 0 : Number(buf.for||0)),
+    // H17
+    con: base("con") + raceBase + boost + (sr.conMod ?? 0) + Number(buf.con||0),
+    // H19 — cascata: mods.agi alimenta ca, initiative e dodge
+    agi: base("agi") + raceBase + boost + (sr.agiMod ?? 0) + Number(buf.agi||0),
+    // H21 — INT não recebe boost de HATE/Inversão (ausência intencional da planilha)
     int: base("int") + raceBase + Number(buf.int||0),
-    mag: base("mag") + raceBase + boost + (subRace==="alcadethes"?6:0) + Number(buf.mag||0),
+    // H23
+    mag: base("mag") + raceBase + boost + (sr.magMod ?? 0) + Number(buf.mag||0),
   };
 
+  // ── Derivados ────────────────────────────────────────────────────────────────
   const armor = armorState(c);
-  const hpMax = Math.trunc(isMonster ? 10+mods.mag/2 : 20+mods.con) - (subRace==="esqueleto"?7:0) - (subRace==="parasita"?8:0) + (subRace==="alcadethes"?mods.con:0) + Number(buf.hp||0);
-  const ppMax = Math.trunc(isMonster ? 15+mods.mag   : 7+mods.mag/2) + Number(buf.pp||0);
-  const ca    = 10 + mods.agi + (armor.light?2:0) - (armor.heavy?6:0) - (armor.medium?3:0) + (subRace==="reptil"?2:0) + (subRace==="parasita"?6:0);
-  const initiative       = mods.agi + skillBonus(c, "Reflexo");
-  const dodge            = initiative - (armor.heavy?6:0) - (armor.medium?3:0);
-  const block            = mods.con - (isMonster?3:0) - (subRace==="parasita"?5:0);
-  const pa               = mods.int + skillBonus(c, "Percepcao");
-  const physicalReduction = Math.round((armor.light?5:0)+(armor.medium?10:0)+(armor.heavy?20:0)+Number(buf.physicalReduction||0));
-  const magicReduction    = Math.round(Number(buf.magicReduction||0)+(subRace==="reptil"?5:0));
+
+  // Submódulos nomeados — isolam a contribuição de cada fator para auditabilidade
+  const armorCA      = (armor.light?2:0) - (armor.medium?3:0) - (armor.heavy?6:0);
+  const armorDodgePen = (armor.medium?3:0) + (armor.heavy?6:0);
+  const armorRD      = (armor.light?5:0) + (armor.medium?10:0) + (armor.heavy?20:0);
+
+  // K24 — Elemental retorna 0 direto; buf.hp ignorado para Elemental
+  const hpBonus = sr.hpBonus === "con" ? mods.con : 0;
+  const hpMax   = sr.hpZero ? 0
+    : Math.trunc(isMonster ? 10+mods.mag/2 : 20+mods.con)
+      - (sr.hpPen ?? 0) + hpBonus + Number(buf.hp||0);
+
+  // K27 — buf.pp somado após ×2, não dobrado
+  const ppMax = Math.trunc(isMonster ? 15+mods.mag : 7+mods.mag/2)
+    * (sr.ppDouble ? 2 : 1) + Number(buf.pp||0);
+
+  // F26 — caBonus1 e caBonus2 preservados separados (dois IFs distintos na planilha para Réptil)
+  const ca = 10 + mods.agi + armorCA + (sr.caBonus1 ?? 0) + (sr.caBonus2 ?? 0);
+
+  // F28 / H28
+  const initiative = mods.agi + skillBonus(c, "Reflexo");
+  const dodge      = initiative - armorDodgePen - (sr.dodgePen ?? 0);
+
+  // H26
+  const block = mods.con - (isMonster?3:0) - (sr.blockPen ?? 0);
+
+  // F30
+  const pa = mods.int + skillBonus(c, "Percepcao");
+
+  // X15 / X16
+  const physicalReduction = Math.round(armorRD + hateRD + (sr.rdFis ?? 0) + Number(buf.physicalReduction||0));
+  const magicReduction    = Math.round(          hateRD + (sr.rdMag ?? 0) + Number(buf.magicReduction||0));
 
   return { mods, hpMax, ppMax, ca, initiative, dodge, block, pa, physicalReduction, magicReduction };
 }
