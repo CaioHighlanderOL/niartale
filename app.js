@@ -966,13 +966,13 @@ function renderStats(c) {
     ]),
     card("Progressao", [
       node("div", "grid three", [
+        field("LEVEL", c.lv, (v) => updateChar(c, { lv: Number(v||1) }), { type:"number", refresh:true }),
+        field("NIVEL", c.nvl, (v) => updateChar(c, { nvl: Number(v||0) }), { type:"number", refresh:true }),
         field("EXP", c.exp, (v) => updateChar(c, { exp: Number(v||0) }), { type:"number", refresh:true }),
         field("XP", c.xp, (v) => updateChar(c, { xp: Number(v||0) }), { type:"number", refresh:true }),
-        field("NVL", c.nvl, (v) => updateChar(c, { nvl: Number(v||0) }), { type:"number", refresh:true }),
       ]),
       node("div", "derived-grid", [
         metricCard("APLICADOS", applied),
-        metricCard("LV/NVL", `${c.lv}/${c.nvl}`),
       ]),
     ]),
     calculatedPanel(calc),

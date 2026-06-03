@@ -132,7 +132,7 @@ Aplicados = attributes.for.value
 ### 4.2 Regras de cálculo
 - **Sem cálculo derivado** nesta sprint. `nvl` é manual.
 - `lv` permanece com a **mesma semântica atual** (nível atual exibido na HUD e na lista do Mestre). **Não redefinir `lv`.**
-- Exibição combinada sugerida: `"{lv}/{nvl}"` (espelha `H14`).
+- `lv` e `nvl` representam informações distintas e devem ser editáveis de forma independente.
 - Normalização: `nvl: Number(v) || 0` (ou `|| lv` se preferir default coerente); sugerido `>= 0`.
 - Regra de consistência opcional (não obrigatória no MVP): se `nvl > 0 && nvl < lv`, apenas sinalizar visualmente; **não** alterar `lv` automaticamente.
 
@@ -142,7 +142,7 @@ Aplicados = attributes.for.value
 - `lv` continua persistido como hoje (inalterado).
 
 ### 4.4 Impacto na ficha
-- UI no card "Progressao": editar `nvl` (e, opcionalmente, exibir o par `lv/nvl`).
+- UI no card "Progressao": editar `lv` (**Level**) e `nvl` (**Nivel**) de forma independente.
 - **HUD:** opcional exibir `lv/nvl` em `hudStat("LV", ...)`. Recomendação MVP: manter HUD mostrando apenas `lv` para não alterar identidade/contagem visual; exibir o par somente no card de Progressao.
 - Lista do Mestre (`renderMaster`) usa `LV ${c.lv}` — manter como está (sem regressão).
 
@@ -197,11 +197,11 @@ function appliedPoints(c) {
 
 ### 5.5 UI (sugestão de baixo risco)
 - Novo card **"Progressao"** em `renderStats(c)`:
+  - `field("LEVEL", c.lv, ...)` (number)
+  - `field("NIVEL", c.nvl, ...)` (number)
   - `field("EXP", c.exp, ...)` (number)
   - `field("XP", c.xp, ...)` (number)
-  - `field("NVL", c.nvl, ...)` (number)
   - `metricCard("APLICADOS", appliedPoints(c))` (read-only)
-  - opcional: `metricCard("LV/NVL", \`${c.lv}/${c.nvl}\`)`
 - Usar `updateChar`/`updateNested` + `{ type:"number", refresh:true }`, padrão já presente.
 
 ---

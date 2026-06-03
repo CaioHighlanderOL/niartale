@@ -698,6 +698,7 @@ Regras aplicadas:
 
 - `exp` e `xp` sao campos manuais (sem formula automatica da planilha).
 - `nvl` e manual; `lv` atual existente foi mantido sem alteracao semantica.
+- `lv` (**Level**) e `nvl` (**Nivel**) sao informacoes distintas e editaveis de forma independente.
 - `Aplicados` e derivado **read-only** com base na planilha:
   - `Aplicados = attributes.for + attributes.con + attributes.agi + attributes.int + attributes.mag`
   - equivalente a `H13 = SUM(F15:F24)` na planilha.
@@ -713,6 +714,7 @@ Impacto em calculos:
 
 - `excelCalc()` nao foi alterado.
 - Nenhum derivado mecanico (HP/PP/C.A/INI/ESQ/BLOQ/P.A/R.D.) depende de EXP/XP/NVL nesta sprint.
+- O visor somente leitura `LV/NVL` foi removido para evitar ambiguidade de UX sobre editabilidade de Nivel.
 
 ### 7.9 Habilidades, Inventario e Equipamentos
 
