@@ -1,0 +1,3 @@
+# Teste
+
+Cursor funcionando corretamente.

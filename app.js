@@ -1,6 +1,6 @@
 import {
   addDoc, auth, collection, createUserWithEmailAndPassword, deleteDoc,
-  doc, firestore, getDoc, limit, onAuthStateChanged, onSnapshot, orderBy,
+  doc, firestore, getDoc, getDocs, limit, onAuthStateChanged, onSnapshot, orderBy,
   query, serverTimestamp, setDoc, signInWithEmailAndPassword, signOut,
   updateDoc, updateProfile, where, writeBatch,
 } from "./firebase.js";
@@ -35,6 +35,208 @@ const SHEET_TABS = [
   ["abilities","Habilidades"],["inventory","Inventario"],
   ["notes","Notas"],["history","Historia"],["resources","Recursos"],
 ];
+
+// Chaves canônicas persistidas no Firestore (ver docs/Especificacao_Raca_SubRaca.md)
+const RACE_KEYS = ["humano", "monstro", "nenhum"];
+const SUB_RACE_KEYS = [
+  "nenhum", "anfibio", "esqueleto", "elemental", "fantasma",
+  "reptil", "alcadethes", "aranha", "flor", "parasita", "variados",
+];
+const RACE_LABELS = { humano: "Humano", monstro: "Monstro", nenhum: "Nenhum" };
+const SUB_RACE_LABELS = {
+  nenhum: "Nenhum", anfibio: "Anfíbio", esqueleto: "Esqueleto", elemental: "Elemental",
+  fantasma: "Fantasma", reptil: "Réptil", alcadethes: "Alcadethes", aranha: "Aranha",
+  flor: "Flor", parasita: "Parasita", variados: "Variados",
+};
+const RACE_ALIASES = {
+  humana: "humano", human: "humano",
+  monster: "monstro",
+  none: "nenhum",
+};
+
+// Bônus por sub-raça (aba Ficha — G8 / H15–X16). Única tabela usada em excelCalc.
+const SUB_RACE_SR = {
+  anfibio:   { forMod:2, agiMod:2, caBonus1:0, rdFis:6, rdMag:6 },
+  alcadethes:{ forMod:6, agiMod:-3, magMod:6, hpBonus:"con", caBonus1:0 },
+  reptil:    { forMod:6, caBonus1:2, caBonus2:-6, dodgePen:6, rdFis:22, rdMag:22, suppressForBuf:true },
+  esqueleto: { agiMod:5, hpPen:10, caBonus1:0 },
+  parasita:  { conMod:-10, agiMod:6, hpPen:10, caBonus1:7, blockPen:5 },
+  aranha:    { agiMod:4, caBonus1:0 },
+  elemental: { hpZero:true, ppDouble:true },
+};
+
+function norm(v) {
+  return String(v ?? "").trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function customFieldVal(c, label) {
+  return c.customFields?.find((f) => norm(f.label) === norm(label))?.value;
+}
+
+function resolveRaceKey(raw) {
+  const k = norm(raw);
+  if (RACE_KEYS.includes(k)) return k;
+  if (RACE_ALIASES[k]) return RACE_ALIASES[k];
+  return "nenhum";
+}
+
+function resolveSubRaceKey(raw) {
+  const k = norm(raw);
+  if (SUB_RACE_KEYS.includes(k)) return k;
+  return "nenhum";
+}
+
+function stripSubRaceCustomFields(fields) {
+  return (fields || []).filter((f) => norm(f.label) !== "sub-raca");
+}
+
+function hasSubRaceCustomField(fields) {
+  return (fields || []).some((f) => norm(f.label) === "sub-raca");
+}
+
+function applyRaceSubRaceNormalization(merged, rawData = {}) {
+  const legacySubRaw = customFieldVal(merged, "Sub-raca");
+  const mergedSubKey = resolveSubRaceKey(merged.subRace ?? "");
+  // Se subRace já vier válido e diferente de "nenhum", ele prevalece sobre custom legado.
+  const subRaw = mergedSubKey !== "nenhum" ? mergedSubKey : (legacySubRaw ?? merged.subRace ?? "nenhum");
+  const rawRaceInput = [rawData.race, rawData.ancestry, merged.race].find((v) => String(v ?? "").trim() !== "") ?? "nenhum";
+  const raceKey = resolveRaceKey(rawRaceInput);
+  const subRaceKey = resolveSubRaceKey(subRaw);
+
+  let customFields = stripSubRaceCustomFields(merged.customFields);
+  if (!customFields.some((f) => norm(f.label) === norm("Almas"))) {
+    const almas = defaultCharacter().customFields.find((f) => norm(f.label) === norm("Almas"));
+    if (almas) customFields = [...customFields, { ...almas, id: uid("cf") }];
+  }
+
+  const migration = { ...(merged._migration || rawData._migration || {}) };
+  const rawRace = rawRaceInput;
+  if (rawRace != null && String(rawRace).trim() && raceKey === "nenhum" && norm(rawRace) !== "nenhum") {
+    migration.raceFrom = String(rawRace);
+  }
+  const rawSub = customFieldVal({ customFields: merged.customFields }, "Sub-raca") ?? merged.subRace;
+  if (rawSub != null && String(rawSub).trim() && subRaceKey === "nenhum" && norm(rawSub) !== "nenhum") {
+    migration.subRaceFrom = String(rawSub);
+  }
+
+  const out = { ...merged, race: raceKey, subRace: subRaceKey, customFields };
+  if (Object.keys(migration).length) out._migration = migration;
+  else delete out._migration;
+  return out;
+}
+
+function mergeRaceSubRaceIntoCharacter(target, source, opts = {}) {
+  const overwriteCustomFields = opts.overwriteCustomFields ?? true;
+  target.race = source.race;
+  target.subRace = source.subRace;
+  if (overwriteCustomFields) target.customFields = source.customFields;
+  if (source._migration) target._migration = { ...target._migration, ...source._migration };
+}
+
+function characterNeedsRaceSubRacePersist(raw, normalized) {
+  if (raw.race !== normalized.race) return true;
+  if (raw.subRace !== normalized.subRace) return true;
+  if (!raw.subRace) return true;
+  if (hasSubRaceCustomField(raw.customFields)) return true;
+  return false;
+}
+
+function buildRaceSubRaceFirestorePatch(raw, normalized) {
+  const patch = {
+    race: normalized.race,
+    subRace: normalized.subRace,
+    customFields: normalized.customFields,
+    updatedAt: serverTimestamp(),
+  };
+  if (normalized._migration?.raceFrom || normalized._migration?.subRaceFrom) {
+    patch._migration = {
+      ...(raw._migration || {}),
+      ...normalized._migration,
+      raceSubRaceAt: serverTimestamp(),
+    };
+  }
+  return patch;
+}
+
+function isKnownRaceInput(raw) {
+  const k = norm(raw);
+  return RACE_KEYS.includes(k) || Boolean(RACE_ALIASES[k]);
+}
+
+function isKnownSubRaceInput(raw) {
+  return SUB_RACE_KEYS.includes(norm(raw));
+}
+
+// Sincroniza c.race / c.subRace em memória; remove custom Sub-raca legado.
+// Sub-raca: chave valida em c.subRace vence (UI); senao custom legado (migracao).
+function ensureCharacterRaceSubRace(c) {
+  if (!c) return { race: "nenhum", subRace: "nenhum" };
+  const race = resolveRaceKey(c.race);
+  const subKey = norm(c.subRace ?? "");
+  const subRace = SUB_RACE_KEYS.includes(subKey)
+    ? subKey
+    : resolveSubRaceKey(customFieldVal(c, "Sub-raca") ?? c.subRace);
+  c.race = race;
+  c.subRace = subRace;
+  if (hasSubRaceCustomField(c.customFields)) {
+    c.customFields = stripSubRaceCustomFields(c.customFields);
+  }
+  return { race, subRace };
+}
+
+function clampResourcesToDerivedMax(c, calc) {
+  const { hpMax, ppMax } = calc ?? excelCalc(c);
+  let adjusted = false;
+  if (c.resources?.hp && hpMax >= 0 && c.resources.hp.current > hpMax) {
+    c.resources.hp.current = hpMax;
+    adjusted = true;
+  }
+  if (c.resources?.mp && ppMax >= 0 && c.resources.mp.current > ppMax) {
+    c.resources.mp.current = ppMax;
+    adjusted = true;
+  }
+  return adjusted;
+}
+
+// Valida e corrige raca/sub-raca antes de calcular ou persistir.
+function sanitizeCharacterForPersist(c) {
+  const warnings = [];
+  const rawRace = c.race;
+  const rawSub = customFieldVal(c, "Sub-raca") ?? c.subRace;
+
+  const normalized = applyRaceSubRaceNormalization({ ...c }, c);
+  Object.assign(c, {
+    race: normalized.race,
+    subRace: normalized.subRace,
+    customFields: normalized.customFields,
+  });
+  if (normalized._migration) {
+    c._migration = { ...(c._migration || {}), ...normalized._migration };
+  }
+
+  if (rawRace != null && String(rawRace).trim() && normalized.race === "nenhum" && !isKnownRaceInput(rawRace)) {
+    warnings.push(`Raca "${rawRace}" nao reconhecida; salva como Nenhum.`);
+  }
+  if (rawSub != null && String(rawSub).trim() && normalized.subRace === "nenhum" && !isKnownSubRaceInput(rawSub)) {
+    warnings.push(`Sub-raca "${rawSub}" nao reconhecida; salva como Nenhum.`);
+  }
+
+  const calc = excelCalc(c);
+  if (clampResourcesToDerivedMax(c, calc)) {
+    warnings.push("HP/MP atuais ajustados ao maximo derivado.");
+  }
+
+  return { warnings, calc };
+}
+
+function emptyExcelCalc() {
+  return {
+    mods: { for:0, con:0, agi:0, int:0, mag:0 },
+    hpMax: 0, ppMax: 0, ca: 0, initiative: 0, dodge: 0, block: 0, pa: 0,
+    physicalReduction: 0, magicReduction: 0,
+    race: "nenhum", subRace: "nenhum",
+  };
+}
 
 // ─── Estado global ─────────────────────────────────────────────────────────────
 
@@ -89,7 +291,7 @@ function defaultCharacter(overrides = {}) {
     ownerName:  state.profile?.displayName || "Jogador",
     player:     state.profile?.displayName || "Jogador",
     campaignId: CAMPAIGN_ID,
-    name: "Nova ficha", race: "Humano",
+    name: "Nova ficha", race: "humano", subRace: "nenhum",
     campaign: state.campaign?.name || "Campanha Principal",
     group: "Grupo principal",
     flavor: "* A alma pulsa como uma pagina viva.",
@@ -118,8 +320,7 @@ function defaultCharacter(overrides = {}) {
       { id:uid("eq"), slot:"Armadura",name:"Casaco listrado",  equipped:true, notes:"" },
     ],
     customFields: [
-      { id:uid("cf"), label:"Sub-raca", value:"Nenhum" },
-      { id:uid("cf"), label:"Almas",    value:"Nenhum" },
+      { id:uid("cf"), label:"Almas", value:"Nenhum" },
     ],
     notes: "Notas rapidas.", history: "Background do personagem.",
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -129,7 +330,7 @@ function defaultCharacter(overrides = {}) {
 
 function normalizeCharacter(id, data) {
   const base = defaultCharacter();
-  return {
+  const merged = {
     id, ...base, ...data,
     theme:        { ...base.theme,       ...(data.theme       || {}) },
     attributes:   { ...base.attributes,  ...(data.attributes  || {}) },
@@ -137,12 +338,12 @@ function normalizeCharacter(id, data) {
     conditions:   { ...base.conditions,  ...(data.conditions  || {}) },
     resources:    { ...base.resources,   ...(data.resources   || {}) },
     skills:       data.skills?.length ? mergeSkills(data.skills) : base.skills,
-    // ?? garante que arrays vazios válidos não sejam substituídos pelo default
     abilities:    data.abilities    ?? base.abilities,
     inventory:    data.inventory    ?? base.inventory,
     equipment:    data.equipment    ?? base.equipment,
     customFields: data.customFields ?? base.customFields,
   };
+  return applyRaceSubRaceNormalization(merged, data);
 }
 
 function mergeSkills(skills) {
@@ -162,6 +363,7 @@ onAuthStateChanged(auth, async (user) => {
   state.profile = await ensureUserProfile(user);
   await ensureDefaultCampaign();
   await migrateLegacyLocalDataOnce();
+  await migrateRaceSubRaceOnce();
   subscribeToFirestoreData();
   render();
 });
@@ -207,7 +409,11 @@ function subscribeToFirestoreData() {
       state.characters = snap.docs
         .map((d) => {
           // Preserva edições locais durante digitação — não sobrescreve com snapshot
-          if (locallyDirtyCharacters.has(d.id) && byId.has(d.id)) return byId.get(d.id);
+          if (locallyDirtyCharacters.has(d.id) && byId.has(d.id)) {
+            const local = byId.get(d.id);
+            mergeRaceSubRaceIntoCharacter(local, normalizeCharacter(d.id, d.data()), { overwriteCustomFields: false });
+            return local;
+          }
           return normalizeCharacter(d.id, d.data());
         })
         .sort((a, b) => String(b.updatedAt?.seconds || "").localeCompare(String(a.updatedAt?.seconds || "")));
@@ -242,7 +448,7 @@ async function migrateLegacyLocalDataOnce() {
     const legacy = JSON.parse(raw[1]);
     const batch  = writeBatch(firestore);
     (legacy.characters || []).slice(0, 50).forEach((c) => {
-      batch.set(doc(collection(firestore, "characters")), {
+      const normalized = normalizeCharacter("legacy", {
         ...defaultCharacter({
           ownerId: isMaster() ? c.ownerId || state.user.uid : state.user.uid,
           ownerName: c.ownerName || state.profile.displayName,
@@ -251,8 +457,15 @@ async function migrateLegacyLocalDataOnce() {
           race:      c.race      || c.ancestry || "Humano",
           lv: Number(c.lv || 1),
           notes: c.notes || "", history: c.history || "",
+          customFields: c.customFields,
         }),
+      });
+      const { id: _dropId, ...payload } = normalized;
+      batch.set(doc(collection(firestore, "characters")), {
+        ...payload,
         importedFromLocalStorage: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
     });
     batch.update(doc(firestore, "users", state.user.uid), { legacyMigratedAt: serverTimestamp() });
@@ -262,6 +475,83 @@ async function migrateLegacyLocalDataOnce() {
   } catch (e) {
     console.warn("Legacy migration failed:", e);
     toast("Nao foi possivel migrar dados locais");
+  }
+}
+
+async function migrateRaceSubRaceOnce() {
+  const masterMigrationVersion = 1;
+  const masterScopeMigrated = Number(state.profile?.raceSubRaceMasterVersion || 0) >= masterMigrationVersion;
+  if (state.profile?.raceSubRaceMigratedAt && (!isMaster() || masterScopeMigrated)) return;
+
+  const charQ = isMaster()
+    ? query(collection(firestore, "characters"), where("campaignId", "==", CAMPAIGN_ID))
+    : query(
+        collection(firestore, "characters"),
+        where("campaignId", "==", CAMPAIGN_ID),
+        where("ownerId", "==", state.user.uid)
+      );
+
+  let snap;
+  try {
+    snap = await getDocs(charQ);
+  } catch (e) {
+    console.warn("Race/subRace migration query failed:", e);
+    return;
+  }
+
+  let batch = writeBatch(firestore);
+  let ops = 0;
+  let migrated = 0;
+  const unknownRaces = [];
+
+  try {
+    for (const d of snap.docs) {
+      const raw = d.data();
+      const normalized = normalizeCharacter(d.id, raw);
+
+      if (locallyDirtyCharacters.has(d.id)) {
+        const local = state.characters.find((c) => c.id === d.id);
+        if (local) mergeRaceSubRaceIntoCharacter(local, normalized);
+        continue;
+      }
+
+      if (!characterNeedsRaceSubRacePersist(raw, normalized)) continue;
+
+      if (normalized._migration?.raceFrom) {
+        unknownRaces.push({ id: d.id, name: raw.name || d.id, from: normalized._migration.raceFrom });
+      }
+
+      batch.update(d.ref, buildRaceSubRaceFirestorePatch(raw, normalized));
+      ops += 1;
+      migrated += 1;
+
+      if (ops >= 500) {
+        await batch.commit();
+        batch = writeBatch(firestore);
+        ops = 0;
+      }
+    }
+
+    if (ops > 0) await batch.commit();
+    const profilePatch = {
+      raceSubRaceMigratedAt: serverTimestamp(),
+      ...(isMaster() ? { raceSubRaceMasterVersion: masterMigrationVersion } : {}),
+    };
+    await updateDoc(doc(firestore, "users", state.user.uid), profilePatch);
+    state.profile = {
+      ...state.profile,
+      raceSubRaceMigratedAt: new Date(),
+      ...(isMaster() ? { raceSubRaceMasterVersion: masterMigrationVersion } : {}),
+    };
+    if (migrated > 0) {
+      toast(`Raca/sub-raca: ${migrated} ficha(s) migrada(s)`);
+    }
+    if (unknownRaces.length && isMaster()) {
+      console.warn("Fichas com raca nao reconhecida (mapeadas para nenhum):", unknownRaces);
+    }
+  } catch (e) {
+    console.warn("Race/subRace migration failed:", e);
+    toast("Nao foi possivel migrar raca/sub-raca");
   }
 }
 
@@ -497,7 +787,15 @@ function renderCharacterCard(c) {
         : node("div", "pixel-soul", [node("span","","♥")]),
     ]),
     field("Nome",    c.name,      (v) => updateChar(c, { name: v }),      { big:true }),
-    field("Raca",    c.race,      (v) => updateChar(c, { race: v }),      { refresh:true }),
+    enumField(
+      "Raca", resolveRaceKey(c.race), RACE_KEYS, RACE_LABELS,
+      (v) => updateChar(c, { race: v }), { refresh: true, disabled: !canEdit(c) }
+    ),
+    enumField(
+      "Sub-raca", resolveSubRaceKey(c.subRace ?? ""), SUB_RACE_KEYS, SUB_RACE_LABELS,
+      (v) => updateChar(c, { subRace: v }),
+      { refresh: true, disabled: !canEdit(c), noMechanicalKeys: ["fantasma", "flor", "variados"] }
+    ),
     field("Jogador", c.player,    (v) => updateChar(c, { player: v }),    { disabled: !isMaster() }),
     field("Frase",   c.flavor,    (v) => updateChar(c, { flavor: v }),    { textarea:true }),
   ]);
@@ -787,7 +1085,13 @@ function renderMaster() {
       ...state.characters.map((c) =>
         rowCard([
           node("strong","",c.name),
-          node("span","tag",`${c.player} / ${c.race} / LV ${c.lv}`),
+          node("span","tag",[
+            `${c.player} / ${RACE_LABELS[resolveRaceKey(c.race)] || c.race}`,
+            resolveSubRaceKey(c.subRace ?? "") !== "nenhum"
+              ? ` / ${SUB_RACE_LABELS[resolveSubRaceKey(c.subRace ?? "")]}`
+              : "",
+            ` / LV ${c.lv}`,
+          ].join("")),
           btn("Abrir",  "ghost-btn",  () => { selectedCharacterId=c.id; setView("sheet"); }),
           btn("Excluir","danger-btn", () => deleteCharacter(c)),
         ])
@@ -871,7 +1175,18 @@ async function updateCampaign(patch) {
 // para não destruir inputs com foco durante digitação.
 function updateChar(c, patch) {
   if (!canEdit(c)) return;
-  Object.assign(c, patch);
+  const next = { ...patch };
+  if (next.race != null) next.race = resolveRaceKey(next.race);
+  if (next.subRace != null) next.subRace = resolveSubRaceKey(next.subRace);
+  Object.assign(c, next);
+
+  if (next.race != null || next.subRace != null) {
+    ensureCharacterRaceSubRace(c);
+    const calc = excelCalc(c);
+    clampResourcesToDerivedMax(c, calc);
+    if (!isTyping()) render();
+  }
+
   scheduleCharSave(c);
 }
 
@@ -907,20 +1222,30 @@ function scheduleCharSave(c) {
 async function saveChar(c, message) {
   if (!canEdit(c) || !c?.id) return;
   clearTimeout(characterSaveTimers.get(c.id));
+
+  const { warnings } = sanitizeCharacterForPersist(c);
   const { id, ...data } = c;
   await updateDoc(doc(firestore, "characters", id), { ...data, updatedAt: serverTimestamp() });
+
   characterSaveTimers.delete(c.id);
-  // Mantém dirty por mais 350ms para absorver o snapshot que vem logo após o save
   setTimeout(() => locallyDirtyCharacters.delete(c.id), 350);
+
   if (message) toast(message);
+  else if (warnings.length) toast(warnings[0]);
 }
 
 // ─── CRUD personagens ──────────────────────────────────────────────────────────
 
 async function createCharacter() {
-  const ref = await addDoc(collection(firestore, "characters"),
-    defaultCharacter({ name: `Personagem ${state.characters.length + 1}` })
-  );
+  const normalized = normalizeCharacter("new", defaultCharacter({
+    name: `Personagem ${state.characters.length + 1}`,
+  }));
+  const { id: _id, ...payload } = normalized;
+  const ref = await addDoc(collection(firestore, "characters"), {
+    ...payload,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
   selectedCharacterId = ref.id;
   currentTab = "general";
   toast("Ficha criada");
@@ -930,6 +1255,7 @@ async function duplicateCharacter() {
   const src = selectedCharacter();
   if (!canEdit(src)) { toast("Sem permissao"); return; }
   const { id, createdAt, updatedAt, ...copy } = src;
+  sanitizeCharacterForPersist(copy);
   const ref = await addDoc(collection(firestore, "characters"), {
     ...copy,
     ownerId:   isMaster() ? copy.ownerId   : state.user.uid,
@@ -989,45 +1315,22 @@ function resourceBars(c) {
 }
 
 function excelCalc(c = selectedCharacter()) {
+  if (!c) return emptyExcelCalc();
 
-  // ── Contexto ────────────────────────────────────────────────────────────────
-  const race      = norm(c.race);
-  const subRace   = norm(customFieldVal(c, "Sub-raca") || "");
+  ensureCharacterRaceSubRace(c);
+  const race = c.race;
+  const subRace = c.subRace;
+
   const isMonster = race === "monstro";
   const isHuman   = race === "humano";
   const raceBase  = (isHuman || isMonster) ? 1 : 0;
   const buf       = c.buffs || {};
   const base      = (k) => Math.trunc(Number(c.attributes[k]?.value || 0) / 4);
   const hate      = c.conditions?.hateBoost ?? false;
-  // boost: efeito de HATE/Inversão nos mods de atributo (H15–H23)
-  // hateRD: efeito de HATE nas reduções de dano (X15, X16) — valor diferente (+16 vs +30)
   const boost     = (hate ? 30 : 0) + (c.conditions?.inversion ? 14 : 0);
   const hateRD    = hate ? 16 : 0;
 
-  // ── Tabela de bônus por sub-raça ─────────────────────────────────────────────
-  // Fonte: células H15–X16 da Planilha Original.xlsx (aba Ficha).
-  // Cada entrada declara apenas os deltas não-zero da sub-raça.
-  // Campos ausentes valem 0. Adicionar nova sub-raça = nova linha aqui.
-  //
-  // suppressForBuf: se true, buf.for é ignorado para esta sub-raça (planilha H15:
-  //   IF(G8="Réptil", 6, 0+W6) — Réptil recebe valor fixo em vez do buff manual).
-  // hpZero: HP máximo = 0, ignorando toda a fórmula e buf.hp (K24 Elemental).
-  // ppDouble: base do PP máximo × 2; buf.pp somado depois, não dobrado (K27 Elemental).
-  // hpBonus: "con" → adiciona mods.con ao HP (K24 Alcadethes usa H17 = CON mod).
-  // caBonus: delta direto na C.A. além de mods.agi (F26).
-  //   Réptil tem dois IFs separados na planilha (+2 e -6, líquido -4) —
-  //   preservados como dois campos distintos para auditabilidade.
-  const SR = {
-    //            forMod  conMod  agiMod  magMod  hpPen  hpBonus     ppDouble  hpZero  caBonus1  caBonus2  blockPen  dodgePen  rdFis  rdMag  suppressForBuf
-    anfibio:   { forMod:2,               agiMod:2,                                               caBonus1:0,                          rdFis:6,  rdMag:6              },
-    alcadethes:{ forMod:6,               agiMod:-3, magMod:6,                hpBonus:"con",                caBonus1:0,                                              },
-    reptil:    { forMod:6,                                                                         caBonus1:2, caBonus2:-6,  dodgePen:6, rdFis:22, rdMag:22, suppressForBuf:true },
-    esqueleto: {                          agiMod:5,           hpPen:10,                           caBonus1:0,                                                       },
-    parasita:  {           conMod:-10,   agiMod:6,           hpPen:10,                            caBonus1:7, blockPen:5,                                           },
-    aranha:    {                          agiMod:4,                                               caBonus1:0,                                                       },
-    elemental: {                                                              hpZero:true, ppDouble:true,                                                            },
-  };
-  const sr = SR[subRace] ?? {};
+  const sr = SUB_RACE_SR[subRace] ?? {};
 
   // ── Modificadores de atributo (H15–H23) ──────────────────────────────────────
   const mods = {
@@ -1052,13 +1355,15 @@ function excelCalc(c = selectedCharacter()) {
   const armorRD      = (armor.light?5:0) + (armor.medium?10:0) + (armor.heavy?20:0);
 
   // K24 — Elemental retorna 0 direto; buf.hp ignorado para Elemental
+  const hpBase = isHuman ? 20 + mods.con : isMonster ? 10 + mods.mag / 2 : 0;
   const hpBonus = sr.hpBonus === "con" ? mods.con : 0;
   const hpMax   = sr.hpZero ? 0
-    : Math.trunc(isMonster ? 10+mods.mag/2 : 20+mods.con)
+    : Math.trunc(hpBase)
       - (sr.hpPen ?? 0) + hpBonus + Number(buf.hp||0);
 
   // K27 — buf.pp somado após ×2, não dobrado
-  const ppMax = Math.trunc(isMonster ? 15+mods.mag : 7+mods.mag/2)
+  const ppBase = isHuman ? 7 + mods.mag / 2 : isMonster ? 15 + mods.mag : 0;
+  const ppMax = Math.trunc(ppBase)
     * (sr.ppDouble ? 2 : 1) + Number(buf.pp||0);
 
   // F26 — caBonus1 e caBonus2 preservados separados (dois IFs distintos na planilha para Réptil)
@@ -1078,7 +1383,10 @@ function excelCalc(c = selectedCharacter()) {
   const physicalReduction = Math.round(armorRD + hateRD + (sr.rdFis ?? 0) + Number(buf.physicalReduction||0));
   const magicReduction    = Math.round(          hateRD + (sr.rdMag ?? 0) + Number(buf.magicReduction||0));
 
-  return { mods, hpMax, ppMax, ca, initiative, dodge, block, pa, physicalReduction, magicReduction };
+  return {
+    mods, hpMax, ppMax, ca, initiative, dodge, block, pa, physicalReduction, magicReduction,
+    race, subRace,
+  };
 }
 
 function skillBonus(c, name) {
@@ -1093,14 +1401,6 @@ function armorState(c) {
     medium: eq.some((e) => e.includes("media") || e.includes("medio")),
     heavy:  eq.some((e) => e.includes("pesada") || e.includes("pesado")),
   };
-}
-
-function customFieldVal(c, label) {
-  return c.customFields?.find((f) => norm(f.label) === norm(label))?.value;
-}
-
-function norm(v) {
-  return String(v||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
 }
 
 // ─── Tema ──────────────────────────────────────────────────────────────────────
@@ -1162,6 +1462,32 @@ function selectField(lbl, value, options, onInput, cfg = {}) {
   });
   sel.addEventListener("change", () => { onInput(sel.value); if (cfg.refresh) render(); });
   return node("label", "field", [node("span","",lbl), sel]);
+}
+
+// enumField: select com chave persistida e label exibido (raca, sub-raca).
+function enumField(lbl, valueKey, keys, labels, onInput, cfg = {}) {
+  const sel = document.createElement("select");
+  const resolved = keys.includes(valueKey) ? valueKey : keys[0];
+  const noMech = new Set(cfg.noMechanicalKeys || []);
+
+  keys.forEach((key) => {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = labels[key] ?? key;
+    opt.selected = key === resolved;
+    if (noMech.has(key)) opt.title = "Sem bonus mecanico na planilha atual";
+    sel.append(opt);
+  });
+
+  if (cfg.disabled || (!cfg.system && currentView === "sheet" && !canEdit())) sel.disabled = true;
+
+  sel.addEventListener("change", () => {
+    onInput(sel.value);
+    if (cfg.refresh && !isTyping()) render();
+    if (currentView === "sheet") saveChar(selectedCharacter());
+  });
+
+  return node("label", `field${cfg.big ? " big-field" : ""}`, [node("span", "", lbl), sel]);
 }
 
 function rangeField(lbl, value, min, max, onInput) {

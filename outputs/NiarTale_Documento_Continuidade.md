@@ -1,10 +1,9 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-02 (raca/sub-raca estruturadas)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
-**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos implementacao de raca/sub-raca (ver `docs/NiarTale_Relatorio_Raca_SubRaca.md`).
+**Escopo desta atualização:** documentação somente. Nenhum arquivo de codigo do app foi alterado.
 
 > Este documento deve ser usado como ponto de partida por qualquer pessoa ou IA que continue o projeto. A planilha original e a implementacao atual devem ser tratadas como fontes primarias: se houver divergencia, conferir a celula exata da planilha antes de mudar regra de jogo.
 
@@ -37,8 +36,6 @@ Arquivos textuais lidos no repositorio:
 - `docs/NiarTale_Documento_Continuidade.md`
 - `docs/NiarTale_Relatorio_Implementacao_D1-D18.md`
 - `docs/NiarTale_Relatorio_Remocao_Classe.md`
-- `docs/NiarTale_Relatorio_Raca_SubRaca.md`
-- `docs/Especificacao_Raca_SubRaca.md`
 - `docs/Planilha Original.xlsx`
 
 ---
@@ -61,9 +58,7 @@ niartale-output/
     ├── Planilha Original.xlsx
     ├── NiarTale_Documento_Continuidade.md
     ├── NiarTale_Relatorio_Implementacao_D1-D18.md
-    ├── NiarTale_Relatorio_Remocao_Classe.md
-    ├── NiarTale_Relatorio_Raca_SubRaca.md
-    └── Especificacao_Raca_SubRaca.md
+    └── NiarTale_Relatorio_Remocao_Classe.md
 ```
 
 ### 2.2 Responsabilidades por Arquivo
@@ -333,42 +328,25 @@ A planilha original e a fonte canonica. `excelCalc()` e uma transliteracao dos p
 
 ### 5.4 Calculos Centralizados
 
-A constante `SUB_RACE_SR` em `app.js` concentra deltas de sub-raca; `excelCalc()` consulta `c.race` e `c.subRace` (chaves canonicas). Essa decisao facilita auditoria:
+A tabela `SR` dentro de `excelCalc()` concentra deltas de sub-raca, evitando repeticao de condicionais soltas. Essa decisao facilita auditoria:
 
-- adicionar sub-raca com regra mecanica = nova linha em `SUB_RACE_SR` e em `SUB_RACE_KEYS` / `SUB_RACE_LABELS`;
-- ajustes de bonus raciais devem ocorrer em `SUB_RACE_SR`;
+- adicionar sub-raca nova deve ser uma linha nova em `SR`;
+- ajustes de bonus raciais devem ocorrer em `SR`;
 - regras especiais como Elemental, Reptil e Alcadethes ficam nomeadas por campos explicitos.
 
-### 5.5 Raca e Sub-raca Estruturadas
-
-Implementado em 2026-06-02 (relatorio dedicado). Resumo:
-
-| Campo | Firestore | UI | Calculo |
-|---|---|---|---|
-| `race` | `humano` \| `monstro` \| `nenhum` | `enumField` no card da ficha | `resolveRaceKey` + `raceBase` / ramos HP-PP |
-| `subRace` | chave em `SUB_RACE_KEYS` | `enumField` no card da ficha | `SUB_RACE_SR[subRace]` |
-
-Fluxos principais:
-
-- **Leitura:** `normalizeCharacter()` → `applyRaceSubRaceNormalization()` (custom `Sub-raca` legado tem prioridade na carga).
-- **Edicao/save:** `sanitizeCharacterForPersist()` antes de `saveChar`; `updateChar` valida chaves e reclampa HP/MP.
-- **Migracao:** `migrateRaceSubRaceOnce()` apos login; flag `users/{uid}.raceSubRaceMigratedAt`.
-
-Sub-racas **Fantasma**, **Flor** e **Variados** existem no select (planilha G8) mas sem entrada em `SUB_RACE_SR` (bonus zero).
-
-### 5.6 UI Otimizada Para Digitacao
+### 5.5 UI Otimizada Para Digitacao
 
 O projeto evita re-render imediato em campos de input. Isso e importante porque a UI e recriada manualmente. `locallyDirtyCharacters` e `renderIfSafe()` existem para proteger foco, cursor e edicoes locais contra snapshots Firestore.
 
-### 5.7 Permissao Visual Nao Substitui Rules
+### 5.6 Permissao Visual Nao Substitui Rules
 
 Elementos de Mestre sao ocultos com `data-master-only` e `body.player-mode`, mas isso e apenas UX. O bloqueio real esta em `firestore.rules`.
 
-### 5.8 Remocao de `className`
+### 5.7 Remocao de `className`
 
 O relatorio `NiarTale_Relatorio_Remocao_Classe.md` documenta que `className` era cosmetico, nao afetava calculos, filtros, lista de fichas ou rules. Foi removido da ficha e do modelo. Campos antigos no Firestore podem existir, mas sao ignorados.
 
-### 5.9 Deploy Estatico com Rewrite SPA
+### 5.8 Deploy Estatico com Rewrite SPA
 
 `firebase.json` define:
 
@@ -471,7 +449,6 @@ Para personagens:
   campaignId,
   name,
   race,
-  subRace,
   campaign,
   group,
   flavor,
@@ -504,8 +481,7 @@ Para personagens:
 | `player` | Nome do jogador/persona associado. |
 | `campaignId` | Atualmente sempre `default`. |
 | `name` | Nome da ficha. |
-| `race` | Raca: chave `humano`, `monstro` ou `nenhum` (labels em `RACE_LABELS`). |
-| `subRace` | Sub-raca: chave em `SUB_RACE_KEYS` (labels em `SUB_RACE_LABELS`). |
+| `race` | Raca, atualmente string livre. |
 | `group` | Agrupamento de campanha. |
 | `flavor` | Texto de ambientacao. |
 | `avatarUrl` | URL de imagem da ficha. |
@@ -697,17 +673,16 @@ Ponto fragil identificado: `armorState()` infere armadura leve/media/pesada pelo
 
 ### 7.10 Campos Customizados
 
-Default em fichas novas:
+Default:
 
 ```js
 [
+  { label: "Sub-raca", value: "Nenhum" },
   { label: "Almas", value: "Nenhum" }
 ]
 ```
 
-Sub-raca **nao** e mais campo customizado: usa `c.subRace`. Fichas antigas com `customFields` label `Sub-raca` sao migradas por `normalizeCharacter` / `migrateRaceSubRaceOnce` (valor copiado para `subRace`, entrada removida do array).
-
-Metadados opcionais `_migration.raceFrom` / `_migration.subRaceFrom` registram valores legados nao mapeados.
+Ponto fragil: sub-raca e buscada por `customFieldVal(c, "Sub-raca")`. Se o campo for renomeado ou removido, bonus raciais deixam de aplicar sem erro visivel.
 
 ---
 
@@ -741,8 +716,8 @@ Blocos importantes:
 
 | Celula | Significado | Estado no app |
 |---|---|---|
-| E8 | Raca | `c.race` (select; chaves canonicas). |
-| G8 | Sub-raca | `c.subRace` (select; tabela `SUB_RACE_SR`). |
+| E8 | Raca | `c.race`, string livre. |
+| G8 | Sub-raca | `customFields["Sub-raca"]`, fragil. |
 | F13 | E.X.P | Ausente no modelo atual. |
 | F14 | XP | Ausente no modelo atual. |
 | H13 | Aplicados: `SUM(F15:F24)` | Ausente como validacao de pontos. |
@@ -884,24 +859,23 @@ O app possui `resources.hp.current` e `resources.mp.current`, mas nao possui his
 |---|---|---|
 | O1 | LVL/NVL como par atual/maximo | App tem `lv`, mas nao nivel maximo de campanha. |
 | O2 | CASH na HUD | Recurso existe, mas aparece principalmente em Recursos. |
-| O3 | ~~Sub-raca como campo proprio/select~~ | **Concluido** (2026-06-02). |
-| O4 | ~~Raca como select~~ | **Concluido** (2026-06-02). |
+| O3 | Sub-raca como campo proprio/select | Evita quebra por renomear campo customizado. |
+| O4 | Raca como select | Evita erros de digitacao em comparacoes de regra. |
 
 ---
 
 ## 10. Instrucoes Para Continuidade
 
 1. Antes de alterar calculos, leia a celula correspondente em `docs/Planilha Original.xlsx`.
-2. Nao reintroduza condicionais de sub-raca espalhadas fora de `SUB_RACE_SR` sem motivo forte.
+2. Nao reintroduza condicionais de sub-raca espalhadas fora da tabela `SR` sem motivo forte.
 3. Preserve a distincao entre `boost` de HATE nos atributos (+30) e `hateRD` nas reducoes de dano (+16).
 4. Nao trate INT como afetado por HATE/Inversao sem confirmar nova regra; a planilha atual nao aplica esses boosts em H21.
 5. Mantenha `caBonus1` e `caBonus2` de Reptil separados, porque refletem dois `IF`s distintos da planilha em F26.
 6. Ao mexer em AGI, audite C.A., Iniciativa e Esquiva, pois todas dependem de `mods.agi`.
 7. Ao mexer em Firestore, atualize tambem `firestore.rules` e valide o fluxo Jogador/Mestre.
-8. Ao criar campos novos na ficha, atualize `defaultCharacter()`, `normalizeCharacter()`, `sanitizeCharacterForPersist()` e a documentacao.
-9. Ao alterar raca/sub-raca, teste migracao lazy, eager do Mestre e save com `sanitizeCharacterForPersist`.
-10. Ao criar controles que afetam calculo, chame renderizacao de forma cuidadosa para nao quebrar digitacao.
-11. Nao fazer redesign visual amplo sem decisao explicita: a estetica retro-pixel e parte da identidade do projeto.
+8. Ao criar campos novos na ficha, atualize `defaultCharacter()`, `normalizeCharacter()` e a documentacao.
+9. Ao criar controles que afetam calculo, chame renderizacao de forma cuidadosa para nao quebrar digitacao.
+10. Nao fazer redesign visual amplo sem decisao explicita: a estetica retro-pixel e parte da identidade do projeto.
 
 ---
 
@@ -914,5 +888,4 @@ O app possui `resources.hp.current` e `resources.mp.current`, mas nao possui his
 - [x] Documentos historicos em `docs/` lidos.
 - [x] `docs/Planilha Original.xlsx` aberta e inspecionada.
 - [x] Aba `Ficha`, dimensoes, formulas e celulas-chave conferidas.
-- [x] Documento de continuidade atualizado (raca/sub-raca 2026-06-02).
-- [x] Relatorio final `NiarTale_Relatorio_Raca_SubRaca.md`.
+- [x] Documento de continuidade atualizado sem alterar codigo.
