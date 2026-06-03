@@ -214,6 +214,9 @@ function sanitizeCharacterForPersist(c) {
   if (normalized._migration) {
     c._migration = { ...(c._migration || {}), ...normalized._migration };
   }
+  c.exp = Math.max(0, Number(c.exp || 0));
+  c.xp = Math.max(0, Number(c.xp || 0));
+  c.nvl = Math.max(0, Number(c.nvl || 0));
   c.combat = normalizeCombatState(c.combat);
 
   if (rawRace != null && String(rawRace).trim() && normalized.race === "nenhum" && !isKnownRaceInput(rawRace)) {
@@ -326,7 +329,7 @@ function defaultCharacter(overrides = {}) {
     campaign: state.campaign?.name || "Campanha Principal",
     group: "Grupo principal",
     flavor: "* A alma pulsa como uma pagina viva.",
-    avatarUrl: "", lv: 1, status: "DETERMINADO",
+    avatarUrl: "", lv: 1, nvl: 0, exp: 0, xp: 0, status: "DETERMINADO",
     theme: defaultTheme(),
     attributes: { for:{value:4}, con:{value:6}, agi:{value:7}, int:{value:5}, mag:{value:3} },
     buffs: { for:0, agi:0, int:0, mag:0, con:0, hp:0, pp:0, physicalReduction:0, magicReduction:0 },
@@ -376,6 +379,9 @@ function normalizeCharacter(id, data) {
     equipment:    data.equipment    ?? base.equipment,
     customFields: data.customFields ?? base.customFields,
   };
+  merged.exp = Math.max(0, Number(data.exp ?? base.exp) || 0);
+  merged.xp = Math.max(0, Number(data.xp ?? base.xp) || 0);
+  merged.nvl = Math.max(0, Number(data.nvl ?? base.nvl) || 0);
   return applyRaceSubRaceNormalization(merged, data);
 }
 
@@ -931,6 +937,7 @@ function renderThemeEditor(c) {
 
 function renderStats(c) {
   const calc = excelCalc(c);
+  const applied = appliedPoints(c);
   return stack([
     sectionTitle("Atributos", "Modificadores calculados automaticamente."),
     node("div", "attribute-grid",
@@ -955,6 +962,17 @@ function renderStats(c) {
       node("div", "grid two", [
         checkField("HATE", c.conditions?.hateBoost, (v) => updateNested(c, ["conditions","hateBoost"], Boolean(v)), { refresh:true }),
         checkField("Inversao", c.conditions?.inversion, (v) => updateNested(c, ["conditions","inversion"], Boolean(v)), { refresh:true }),
+      ]),
+    ]),
+    card("Progressao", [
+      node("div", "grid three", [
+        field("EXP", c.exp, (v) => updateChar(c, { exp: Number(v||0) }), { type:"number", refresh:true }),
+        field("XP", c.xp, (v) => updateChar(c, { xp: Number(v||0) }), { type:"number", refresh:true }),
+        field("NVL", c.nvl, (v) => updateChar(c, { nvl: Number(v||0) }), { type:"number", refresh:true }),
+      ]),
+      node("div", "derived-grid", [
+        metricCard("APLICADOS", applied),
+        metricCard("LV/NVL", `${c.lv}/${c.nvl}`),
       ]),
     ]),
     calculatedPanel(calc),
@@ -1446,6 +1464,11 @@ function armorState(c) {
 
 function sumSeries(values) {
   return (values || []).reduce((sum, v) => sum + Number(v || 0), 0);
+}
+
+function appliedPoints(c) {
+  return ["for","con","agi","int","mag"]
+    .reduce((sum, key) => sum + Number(c.attributes?.[key]?.value || 0), 0);
 }
 
 function combatFlow(c, calc = excelCalc(c)) {
