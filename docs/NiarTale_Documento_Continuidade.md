@@ -1,10 +1,10 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-02 (raca/sub-raca estruturadas)  
+**Ultima atualizacao:** 2026-06-03 (Sprint 1 de paridade da planilha)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
-**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos implementacao de raca/sub-raca (ver `docs/NiarTale_Relatorio_Raca_SubRaca.md`).
+**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 1 de paridade (HATE/Inversao em UI, Calcula Dano/Cura/PP e HP/PP Restante).
 
 > Este documento deve ser usado como ponto de partida por qualquer pessoa ou IA que continue o projeto. A planilha original e a implementacao atual devem ser tratadas como fontes primarias: se houver divergencia, conferir a celula exata da planilha antes de mudar regra de jogo.
 
@@ -600,7 +600,7 @@ Mapeamento principal:
 }
 ```
 
-Esses campos ja sao considerados em `excelCalc()`, mas o documento historico identifica que faltam controles diretos na UI para ligar/desligar HATE e Inversao.
+Esses campos sao considerados em `excelCalc()` **e agora possuem controles diretos na UI** (aba Atributos e card de Fluxo de combate em Recursos) para ligar/desligar HATE e Inversao.
 
 ### 7.7 Recursos
 
@@ -616,6 +616,32 @@ Esses campos ja sao considerados em `excelCalc()`, mas o documento historico ide
 ```
 
 Observacao: para HP e MP/PP, o maximo exibido nas barras vem de `excelCalc()` (`hpMax` e `ppMax`), nao necessariamente de `resources.hp.max` ou `resources.mp.max`.
+
+### 7.7.1 Fluxo de combate (Sprint 1)
+
+Foi adicionado o bloco `combat` no modelo da ficha para aproximar a estrutura da planilha (`W18:X30`) sem quebrar fichas antigas.
+
+```js
+combat: {
+  hpDamage: [n1, n2, n3, n4, n5], // Calcula Dano
+  hpHeal:   [n1, n2, n3, n4, n5], // Calcula Cura
+  ppSpend:  [n1, n2, n3, n4, n5], // Calcula PP (gasto)
+  ppRecover:[n1, n2, n3, n4, n5]  // PP Recuperado
+}
+```
+
+Regras de compatibilidade:
+
+- `normalizeCharacter()` injeta o bloco com default quando ausente;
+- `sanitizeCharacterForPersist()` normaliza/completa o bloco antes de persistir;
+- valores sao normalizados para numero e clampados para `>= 0`.
+
+Derivados calculados no frontend:
+
+- `HP Restante = hpMax - SUM(hpDamage) + SUM(hpHeal)`
+- `PP Restante = ppMax - SUM(ppSpend) + SUM(ppRecover)`
+
+Importante: nesta Sprint 1, `HP Restante` e `PP Restante` sao exibidos como metricas derivadas e **nao substituem automaticamente** `resources.hp.current`/`resources.mp.current`.
 
 ### 7.8 Pericias
 
@@ -829,23 +855,23 @@ No app:
 
 - `conditions.hateBoost` existe e afeta calculos;
 - `conditions.inversion` existe e afeta calculos;
-- ainda falta UI direta para alternar esses booleanos;
+- UI direta para alternar esses booleanos foi adicionada na Sprint 1;
 - valores percentuais completos de HATE/HOPE nao existem no modelo.
 
 ### 8.8 Dano, Cura e PP
 
-Blocos da planilha ainda nao representados de forma completa no app:
+Status apos Sprint 1:
 
 | Bloco | Celulas | Formula importante |
 |---|---|---|
-| CalculaDANO | W18:X23 | `X21 = SUM(W19:W23)` |
-| HP Restante | X23 | `K24 - SUM(W19:W23) + SUM(Y19:Y23)` |
-| CalculaCURA | Y18:Y23 | soma curas em `Y19:Y23` |
-| CalculaPP | W25:X30 | `X28 = SUM(W26:W30)` |
-| PP Restante | X30 | `K27 - SUM(W26:W30) + SUM(Y26:Y30)` |
-| PP Recuperado | Y25:Y30 | soma recuperacoes em `Y26:Y30` |
+| CalculaDANO | W18:X23 | **Implementado na UI** como 5 entradas (`combat.hpDamage`) e total exibido. |
+| HP Restante | X23 | **Implementado na UI** por derivacao `hpMax - dano + cura`. |
+| CalculaCURA | Y18:Y23 | **Implementado na UI** como 5 entradas (`combat.hpHeal`) e total exibido. |
+| CalculaPP | W25:X30 | **Implementado na UI** como 5 entradas (`combat.ppSpend`) e total exibido. |
+| PP Restante | X30 | **Implementado na UI** por derivacao `ppMax - gasto + recuperacao`. |
+| PP Recuperado | Y25:Y30 | **Implementado na UI** como 5 entradas (`combat.ppRecover`) e total exibido. |
 
-O app possui `resources.hp.current` e `resources.mp.current`, mas nao possui historico de ate 5 entradas de dano/cura/gasto/recuperacao como a planilha.
+Observacao: os blocos foram adicionados na aba Recursos em um card unico "Fluxo de combate", reutilizando os calculos existentes de `excelCalc` (`hpMax` e `ppMax`).
 
 ### 8.9 Imagem e Musica
 
@@ -863,9 +889,9 @@ O app possui `resources.hp.current` e `resources.mp.current`, mas nao possui his
 
 | ID | Pendencia | Motivo |
 |---|---|---|
-| E1 | UI para HATE e Inversao | Campos existem e calculam, mas dependem de edicao fora da UI. |
-| E2 | CalculaDANO + HP restante | Planilha tem bloco proprio; app exige controle manual de HP. |
-| E3 | CalculaPP + PP restante | Planilha tem bloco proprio; app exige controle manual de MP/PP. |
+| E1 | ~~UI para HATE e Inversao~~ | **Concluido (Sprint 1)**. |
+| E2 | ~~CalculaDANO + HP restante~~ | **Concluido (Sprint 1)**. |
+| E3 | ~~CalculaPP + PP restante~~ | **Concluido (Sprint 1)**. |
 | E4 | EXP, XP, pontos aplicados e LVL/NVL | Progressao da planilha esta incompleta no app. |
 | E5 | Tipo de armadura explicito | Inferencia por nome e propensa a erro silencioso. |
 

@@ -35,6 +35,7 @@ const SHEET_TABS = [
   ["abilities","Habilidades"],["inventory","Inventario"],
   ["notes","Notas"],["history","Historia"],["resources","Recursos"],
 ];
+const COMBAT_FLOW_SLOTS = 5;
 
 // Chaves canônicas persistidas no Firestore (ver docs/Especificacao_Raca_SubRaca.md)
 const RACE_KEYS = ["humano", "monstro", "nenhum"];
@@ -213,6 +214,7 @@ function sanitizeCharacterForPersist(c) {
   if (normalized._migration) {
     c._migration = { ...(c._migration || {}), ...normalized._migration };
   }
+  c.combat = normalizeCombatState(c.combat);
 
   if (rawRace != null && String(rawRace).trim() && normalized.race === "nenhum" && !isKnownRaceInput(rawRace)) {
     warnings.push(`Raca "${rawRace}" nao reconhecida; salva como Nenhum.`);
@@ -285,6 +287,35 @@ function defaultTheme() {
   return { type: "linear", angle: 135, colors: ["#ff4fd8", "#6ee7ff", "#ffe66d"] };
 }
 
+function normalizeCombatSeries(series) {
+  const values = Array.isArray(series) ? series : [];
+  const out = [];
+  for (let i = 0; i < COMBAT_FLOW_SLOTS; i++) {
+    out.push(Math.max(0, Number(values[i] || 0)));
+  }
+  return out;
+}
+
+function defaultCombatState() {
+  return {
+    hpDamage: normalizeCombatSeries(),
+    hpHeal: normalizeCombatSeries(),
+    ppSpend: normalizeCombatSeries(),
+    ppRecover: normalizeCombatSeries(),
+  };
+}
+
+function normalizeCombatState(combat) {
+  const base = defaultCombatState();
+  const src = combat || {};
+  return {
+    hpDamage: normalizeCombatSeries(src.hpDamage ?? base.hpDamage),
+    hpHeal: normalizeCombatSeries(src.hpHeal ?? base.hpHeal),
+    ppSpend: normalizeCombatSeries(src.ppSpend ?? base.ppSpend),
+    ppRecover: normalizeCombatSeries(src.ppRecover ?? base.ppRecover),
+  };
+}
+
 function defaultCharacter(overrides = {}) {
   return {
     ownerId:    state.user?.uid || "",
@@ -306,6 +337,7 @@ function defaultCharacter(overrides = {}) {
       energy: { label:"EN",   current:5,  max:5,   color:"#80ff72" },
       cash:   { label:"CASH", current:0,  max:999, color:"#d6ff6e" },
     },
+    combat: defaultCombatState(),
     skills: SKILL_NAMES.map((name) => ({ id:uid("sk"), name, trained:false, master:false, extra:0 })),
     abilities: [{
       id: uid("ab"), name: "Ato de Determinacao", cost: "1 MP",
@@ -337,6 +369,7 @@ function normalizeCharacter(id, data) {
     buffs:        { ...base.buffs,       ...(data.buffs        || {}) },
     conditions:   { ...base.conditions,  ...(data.conditions  || {}) },
     resources:    { ...base.resources,   ...(data.resources   || {}) },
+    combat:       normalizeCombatState(data.combat ?? base.combat),
     skills:       data.skills?.length ? mergeSkills(data.skills) : base.skills,
     abilities:    data.abilities    ?? base.abilities,
     inventory:    data.inventory    ?? base.inventory,
@@ -918,6 +951,12 @@ function renderStats(c) {
         )
       ),
     ]),
+    card("Condicoes", [
+      node("div", "grid two", [
+        checkField("HATE", c.conditions?.hateBoost, (v) => updateNested(c, ["conditions","hateBoost"], Boolean(v)), { refresh:true }),
+        checkField("Inversao", c.conditions?.inversion, (v) => updateNested(c, ["conditions","inversion"], Boolean(v)), { refresh:true }),
+      ]),
+    ]),
     calculatedPanel(calc),
   ]);
 }
@@ -1054,10 +1093,12 @@ function renderHistory(c) {
 
 function renderResources(c) {
   const calc = excelCalc(c);
+  const flow = combatFlow(c, calc);
   return stack([
     sectionTitle("Recursos", "Barras e valores atuais."),
     card("Barras", [resourceBars(c)]),
     calculatedPanel(calc),
+    renderCombatFlowCard(c, flow),
     card("Editar atuais", [
       node("div", "grid three",
         Object.entries(c.resources).map(([k, r]) =>
@@ -1401,6 +1442,75 @@ function armorState(c) {
     medium: eq.some((e) => e.includes("media") || e.includes("medio")),
     heavy:  eq.some((e) => e.includes("pesada") || e.includes("pesado")),
   };
+}
+
+function sumSeries(values) {
+  return (values || []).reduce((sum, v) => sum + Number(v || 0), 0);
+}
+
+function combatFlow(c, calc = excelCalc(c)) {
+  const combat = normalizeCombatState(c.combat);
+  const hpDamage = sumSeries(combat.hpDamage);
+  const hpHeal = sumSeries(combat.hpHeal);
+  const ppSpend = sumSeries(combat.ppSpend);
+  const ppRecover = sumSeries(combat.ppRecover);
+  return {
+    combat,
+    hpDamage,
+    hpHeal,
+    ppSpend,
+    ppRecover,
+    hpRemaining: Number(calc.hpMax || 0) - hpDamage + hpHeal,
+    ppRemaining: Number(calc.ppMax || 0) - ppSpend + ppRecover,
+  };
+}
+
+function updateCombatSeries(c, key, idx, value) {
+  if (!canEdit(c)) return;
+  const combat = normalizeCombatState(c.combat);
+  const series = [...combat[key]];
+  series[idx] = Math.max(0, Number(value || 0));
+  c.combat = { ...combat, [key]: series };
+  scheduleCharSave(c);
+}
+
+function renderCombatSeriesInputs(c, title, key, labelPrefix, values) {
+  return node("section", "panel content-card", [
+    node("h3", "", title),
+    node("div", "grid three",
+      values.map((v, idx) =>
+        field(
+          `${labelPrefix} ${idx + 1}`,
+          v,
+          (next) => updateCombatSeries(c, key, idx, next),
+          { type:"number", refresh:true },
+        )
+      )
+    ),
+  ]);
+}
+
+function renderCombatFlowCard(c, flow) {
+  return card("Fluxo de combate", [
+    node("div", "grid two", [
+      checkField("HATE", c.conditions?.hateBoost, (v) => updateNested(c, ["conditions","hateBoost"], Boolean(v)), { refresh:true }),
+      checkField("Inversao", c.conditions?.inversion, (v) => updateNested(c, ["conditions","inversion"], Boolean(v)), { refresh:true }),
+    ]),
+    node("div", "grid two", [
+      renderCombatSeriesInputs(c, "Calcula Dano", "hpDamage", "Dano", flow.combat.hpDamage),
+      renderCombatSeriesInputs(c, "Calcula Cura", "hpHeal", "Cura", flow.combat.hpHeal),
+      renderCombatSeriesInputs(c, "Calcula PP", "ppSpend", "Gasto", flow.combat.ppSpend),
+      renderCombatSeriesInputs(c, "PP Recuperado", "ppRecover", "Rec", flow.combat.ppRecover),
+    ]),
+    node("div", "derived-grid", [
+      metricCard("DANO", flow.hpDamage),
+      metricCard("CURA", flow.hpHeal),
+      metricCard("HP REST.", flow.hpRemaining),
+      metricCard("PP GASTO", flow.ppSpend),
+      metricCard("PP REC.", flow.ppRecover),
+      metricCard("PP REST.", flow.ppRemaining),
+    ]),
+  ]);
 }
 
 // ─── Tema ──────────────────────────────────────────────────────────────────────
