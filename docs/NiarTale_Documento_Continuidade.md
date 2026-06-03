@@ -1,10 +1,10 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-03 (Sprint 1 de paridade da planilha)  
+**Ultima atualizacao:** 2026-06-03 (Sprint 2 de progressao)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
-**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 1 de paridade (HATE/Inversao em UI, Calcula Dano/Cura/PP e HP/PP Restante).
+**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 2 de progressao (EXP, XP, Aplicados e NVL), mantendo o escopo da Sprint 1.
 
 > Este documento deve ser usado como ponto de partida por qualquer pessoa ou IA que continue o projeto. A planilha original e a implementacao atual devem ser tratadas como fontes primarias: se houver divergencia, conferir a celula exata da planilha antes de mudar regra de jogo.
 
@@ -509,7 +509,10 @@ Para personagens:
 | `group` | Agrupamento de campanha. |
 | `flavor` | Texto de ambientacao. |
 | `avatarUrl` | URL de imagem da ficha. |
-| `lv` | Nivel atual simples. |
+| `lv` | Nivel atual simples (parte atual do par LV/NVL). |
+| `nvl` | Nivel maximo/alvo (parte final do par LV/NVL). |
+| `exp` | Experiencia total/acumulada (manual). |
+| `xp` | XP corrente/disponivel (manual). |
 | `status` | Status textual exibido na HUD. |
 
 ### 7.3 Tema
@@ -678,6 +681,38 @@ No codigo:
 ```js
 (trained ? 5 : 0) + (master ? 10 : 0) + Number(extra || 0)
 ```
+
+### 7.8.1 Progressao (Sprint 2)
+
+Campos implementados na ficha:
+
+```js
+{
+  exp: number, // E13/F13
+  xp: number,  // E14/F14
+  nvl: number  // G14/H14 (parte final do par LV/NVL)
+}
+```
+
+Regras aplicadas:
+
+- `exp` e `xp` sao campos manuais (sem formula automatica da planilha).
+- `nvl` e manual; `lv` atual existente foi mantido sem alteracao semantica.
+- `Aplicados` e derivado **read-only** com base na planilha:
+  - `Aplicados = attributes.for + attributes.con + attributes.agi + attributes.int + attributes.mag`
+  - equivalente a `H13 = SUM(F15:F24)` na planilha.
+
+Persistencia e compatibilidade:
+
+- `defaultCharacter()` adiciona `exp:0`, `xp:0`, `nvl:0`.
+- `normalizeCharacter()` injeta defaults em fichas antigas (migracao lazy).
+- `sanitizeCharacterForPersist()` normaliza/clampa `exp`, `xp` e `nvl` para `>= 0`.
+- `Aplicados` nao e persistido; e sempre recalculado no render.
+
+Impacto em calculos:
+
+- `excelCalc()` nao foi alterado.
+- Nenhum derivado mecanico (HP/PP/C.A/INI/ESQ/BLOQ/P.A/R.D.) depende de EXP/XP/NVL nesta sprint.
 
 ### 7.9 Habilidades, Inventario e Equipamentos
 
@@ -892,7 +927,7 @@ Observacao: os blocos foram adicionados na aba Recursos em um card unico "Fluxo 
 | E1 | ~~UI para HATE e Inversao~~ | **Concluido (Sprint 1)**. |
 | E2 | ~~CalculaDANO + HP restante~~ | **Concluido (Sprint 1)**. |
 | E3 | ~~CalculaPP + PP restante~~ | **Concluido (Sprint 1)**. |
-| E4 | EXP, XP, pontos aplicados e LVL/NVL | Progressao da planilha esta incompleta no app. |
+| E4 | ~~EXP, XP, pontos aplicados e LVL/NVL~~ | **Concluido (Sprint 2)**. |
 | E5 | Tipo de armadura explicito | Inferencia por nome e propensa a erro silencioso. |
 
 ### Importantes
@@ -908,7 +943,7 @@ Observacao: os blocos foram adicionados na aba Recursos em um card unico "Fluxo 
 
 | ID | Pendencia | Motivo |
 |---|---|---|
-| O1 | LVL/NVL como par atual/maximo | App tem `lv`, mas nao nivel maximo de campanha. |
+| O1 | ~~LVL/NVL como par atual/maximo~~ | **Concluido (Sprint 2)** com `lv/nvl`. |
 | O2 | CASH na HUD | Recurso existe, mas aparece principalmente em Recursos. |
 | O3 | ~~Sub-raca como campo proprio/select~~ | **Concluido** (2026-06-02). |
 | O4 | ~~Raca como select~~ | **Concluido** (2026-06-02). |
