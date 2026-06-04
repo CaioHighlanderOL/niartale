@@ -32,10 +32,13 @@ const SKILL_NAMES = [
 
 const SHEET_TABS = [
   ["general","Geral"],["stats","Atributos"],["skills","Pericias"],
-  ["abilities","Habilidades"],["inventory","Inventario"],
+  ["abilities","Habilidades"],["inventory","Inventario"],["equipment","Equipamentos"],
   ["notes","Notas"],["history","Historia"],["resources","Recursos"],
 ];
 const COMBAT_FLOW_SLOTS = 5;
+// Tipos de armadura explicitos (Sprint 3). "" = nenhum tipo definido.
+const ARMOR_TYPE_KEYS = ["", "leve", "media", "pesada"];
+const ARMOR_TYPE_LABELS = { "":"Nenhuma", leve:"Leve", media:"Media", pesada:"Pesada" };
 
 // Chaves canônicas persistidas no Firestore (ver docs/Especificacao_Raca_SubRaca.md)
 const RACE_KEYS = ["humano", "monstro", "nenhum"];
@@ -218,6 +221,7 @@ function sanitizeCharacterForPersist(c) {
   c.xp = Math.max(0, Number(c.xp || 0));
   c.nvl = Math.max(0, Number(c.nvl || 0));
   c.combat = normalizeCombatState(c.combat);
+  c.equipment = normalizeEquipment(c.equipment);
 
   if (rawRace != null && String(rawRace).trim() && normalized.race === "nenhum" && !isKnownRaceInput(rawRace)) {
     warnings.push(`Raca "${rawRace}" nao reconhecida; salva como Nenhum.`);
@@ -319,6 +323,27 @@ function normalizeCombatState(combat) {
   };
 }
 
+// Normaliza a lista de equipamentos garantindo a forma por item (Sprint 3).
+// Migracao lazy/aditiva: itens antigos sem `armorType` recebem "" (mantem o
+// comportamento atual via fallback de inferencia por nome em armorState).
+function normalizeEquipmentItem(item) {
+  const src = item || {};
+  const armorType = ARMOR_TYPE_KEYS.includes(src.armorType) ? src.armorType : "";
+  return {
+    id: src.id || uid("eq"),
+    slot: src.slot ?? "",
+    name: src.name ?? "",
+    equipped: Boolean(src.equipped),
+    notes: src.notes ?? "",
+    armorType,
+  };
+}
+
+function normalizeEquipment(equipment) {
+  if (!Array.isArray(equipment)) return [];
+  return equipment.map(normalizeEquipmentItem);
+}
+
 function defaultCharacter(overrides = {}) {
   return {
     ownerId:    state.user?.uid || "",
@@ -351,8 +376,8 @@ function defaultCharacter(overrides = {}) {
       qty: 1, weight: 0, observations: "",
     }],
     equipment: [
-      { id:uid("eq"), slot:"Arma",    name:"Faca cega",       equipped:true, notes:"" },
-      { id:uid("eq"), slot:"Armadura",name:"Casaco listrado",  equipped:true, notes:"" },
+      { id:uid("eq"), slot:"Arma",    name:"Faca cega",       equipped:true, notes:"", armorType:"" },
+      { id:uid("eq"), slot:"Armadura",name:"Casaco listrado",  equipped:true, notes:"", armorType:"" },
     ],
     customFields: [
       { id:uid("cf"), label:"Almas", value:"Nenhum" },
@@ -376,7 +401,7 @@ function normalizeCharacter(id, data) {
     skills:       data.skills?.length ? mergeSkills(data.skills) : base.skills,
     abilities:    data.abilities    ?? base.abilities,
     inventory:    data.inventory    ?? base.inventory,
-    equipment:    data.equipment    ?? base.equipment,
+    equipment:    normalizeEquipment(data.equipment ?? base.equipment),
     customFields: data.customFields ?? base.customFields,
   };
   merged.exp = Math.max(0, Number(data.exp ?? base.exp) || 0);
@@ -855,6 +880,7 @@ function renderTab(c) {
     skills:    renderSkills,
     abilities: () => renderAbilities(c),
     inventory: () => renderInventory(c),
+    equipment: () => renderEquipment(c),
     notes:     renderNotes,
     history:   renderHistory,
     resources: renderResources,
@@ -1097,6 +1123,72 @@ function buildItemCard(c, key, item, fields, canE) {
 
   card_.append(grid, removeBtn);
   return card_;
+}
+
+// ─── Aba Equipamentos (Sprint 3) ───────────────────────────────────────────────
+// Texto (slot/name/notes) usa inputs nativos para nao perder foco durante digitacao.
+// armorType (select) e equipped (checkbox) recalculam derivados via refresh.
+
+function renderEquipment(c) {
+  const canE = canEdit(c);
+  const items = c.equipment || [];
+
+  const list = node("div", "list-grid", items.map((item) => buildEquipmentCard(c, item, canE)));
+
+  const addBtn = btn("+ Equipamento", "primary-btn", async () => {
+    await addListItem(c, "equipment", { slot:"", name:"", equipped:false, notes:"", armorType:"" });
+  });
+  if (!canE) addBtn.disabled = true;
+
+  return stack([
+    sectionTitle("Equipamentos", "Itens equipados e tipo de armadura."),
+    node("div", "list-editor-wrapper", [list, addBtn]),
+  ]);
+}
+
+function buildEquipmentCard(c, item, canE) {
+  const idxOf = () => c.equipment.findIndex((e) => e.id === item.id);
+
+  const textField = (fname, isArea = false) => {
+    const input = isArea ? document.createElement("textarea") : document.createElement("input");
+    input.value = item[fname] ?? "";
+    if (!isArea) input.type = "text";
+    if (!canE) input.disabled = true;
+    input.addEventListener("input", () => {
+      const idx = idxOf();
+      if (idx !== -1) {
+        c.equipment[idx] = { ...c.equipment[idx], [fname]: input.value };
+        item[fname] = input.value;
+        scheduleCharSave(c);
+      }
+    });
+    input.addEventListener("blur", () => scheduleCharSave(c));
+    return node("label", "field", [node("span","",labelFor(fname)), input]);
+  };
+
+  const grid = node("div", "grid two", [
+    textField("slot"),
+    textField("name"),
+    enumField(
+      "Tipo de armadura", ARMOR_TYPE_KEYS.includes(item.armorType) ? item.armorType : "",
+      ARMOR_TYPE_KEYS, ARMOR_TYPE_LABELS,
+      (v) => { const idx = idxOf(); if (idx !== -1) updateArrayItem(c, "equipment", idx, { armorType: v }); },
+      { refresh:true, disabled: !canE }
+    ),
+    checkField(
+      "Equipado", item.equipped,
+      (v) => { const idx = idxOf(); if (idx !== -1) updateArrayItem(c, "equipment", idx, { equipped: Boolean(v) }); },
+      { refresh:true }
+    ),
+    textField("notes", true),
+  ]);
+
+  const removeBtn = btn("Remover", "danger-btn small-btn", async () => {
+    await removeListItem(c, "equipment", item.id);
+  });
+  if (!canE) removeBtn.disabled = true;
+
+  return node("section", "panel content-card list-item-card", [grid, removeBtn]);
 }
 
 // ─── Outras abas ───────────────────────────────────────────────────────────────
@@ -1453,12 +1545,31 @@ function skillBonus(c, name) {
   return s ? (s.trained?5:0)+(s.master?10:0)+Number(s.extra||0) : 0;
 }
 
+// Inferencia por nome/slot (fallback de compatibilidade para fichas antigas).
+function inferArmorTypeFromName(item) {
+  const text = norm(`${item.slot} ${item.name}`);
+  if (text.includes("leve")) return "leve";
+  if (text.includes("media") || text.includes("medio")) return "media";
+  if (text.includes("pesada") || text.includes("pesado")) return "pesada";
+  return "";
+}
+
+// Resolve o tipo efetivo de armadura de um item equipado.
+// Prioridade: armorType explicito; fallback: inferencia por nome.
+// Quando armorType esta preenchido, o nome NAO e avaliado (evita dupla contagem).
+function resolveArmorType(item) {
+  const explicit = ARMOR_TYPE_KEYS.includes(item.armorType) ? item.armorType : "";
+  return explicit || inferArmorTypeFromName(item);
+}
+
 function armorState(c) {
-  const eq = c.equipment.filter((e) => e.equipped).map((e) => norm(`${e.slot} ${e.name}`));
+  const types = (c.equipment || [])
+    .filter((e) => e.equipped)
+    .map(resolveArmorType);
   return {
-    light:  eq.some((e) => e.includes("leve")),
-    medium: eq.some((e) => e.includes("media") || e.includes("medio")),
-    heavy:  eq.some((e) => e.includes("pesada") || e.includes("pesado")),
+    light:  types.includes("leve"),
+    medium: types.includes("media"),
+    heavy:  types.includes("pesada"),
   };
 }
 
@@ -1687,6 +1798,7 @@ function labelFor(key) {
   return ({
     name:"Nome", cost:"Custo", description:"Descricao", effects:"Efeitos",
     observations:"Observacoes", qty:"Qtd", weight:"Peso (kg)", notes:"Notas",
+    slot:"Slot",
   })[key] || key;
 }
 

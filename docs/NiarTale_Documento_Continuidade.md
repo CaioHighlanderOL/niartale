@@ -1,10 +1,10 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-03 (Sprint 2 de progressao)  
+**Ultima atualizacao:** 2026-06-03 (Sprint 3 de equipamentos)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
-**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 2 de progressao (EXP, XP, Aplicados e NVL), mantendo o escopo da Sprint 1.
+**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 3 (aba Equipamentos, equipar/desequipar e `armorType` explicito), mantendo o escopo das Sprints 1 e 2.
 
 > Este documento deve ser usado como ponto de partida por qualquer pessoa ou IA que continue o projeto. A planilha original e a implementacao atual devem ser tratadas como fontes primarias: se houver divergencia, conferir a celula exata da planilha antes de mudar regra de jogo.
 
@@ -136,6 +136,7 @@ Abas de ficha em `SHEET_TABS`:
 - `Pericias`
 - `Habilidades`
 - `Inventario`
+- `Equipamentos`
 - `Notas`
 - `Historia`
 - `Recursos`
@@ -265,6 +266,7 @@ Essa duplicacao e correta e deve ser mantida. Nao confiar somente no frontend.
 - Pericias: 26 pericias com Treinado, Mestre e Extra.
 - Habilidades: lista editavel de habilidades com custo, efeitos, descricao e observacoes.
 - Inventario: lista editavel de itens com quantidade, peso, descricao e observacoes.
+- Equipamentos: lista editavel de equipamentos com slot, nome, tipo de armadura explicito (Leve/Media/Pesada), toggle equipado e notas.
 - Notas: texto livre.
 - Historia: texto livre.
 - Recursos: HP, MP/PP, EN e CASH.
@@ -752,11 +754,12 @@ Impacto em calculos:
   slot,
   name,
   equipped,
-  notes
+  notes,
+  armorType // "" | "leve" | "media" | "pesada" (Sprint 3)
 }
 ```
 
-Ponto fragil identificado: `armorState()` infere armadura leve/media/pesada pelo texto do nome/slot. A planilha usa checkboxes explicitos (`R21`, `R23`, `R25`). Um campo explicito `armorType` seria mais seguro.
+**Atualizado (Sprint 3):** o equipamento agora tem aba propria (`renderEquipment`) e campo explicito `armorType`. `armorState()` resolve o tipo por item com prioridade para `armorType`; quando vazio, faz **fallback** para a inferencia por nome/slot (compatibilidade com fichas antigas). A agregacao continua somavel entre itens equipados, preservando `R21/R23/R25` da planilha. `excelCalc()` **nao foi alterado**: os coeficientes de C.A. (+2/-3/-6), Esquiva (-3/-6) e R.D. Fisica (+5/+10/+20) seguem em `excelCalc` via `armorState`. Normalizacao por `normalizeEquipment()` em `normalizeCharacter()` e `sanitizeCharacterForPersist()`.
 
 ### 7.10 Campos Customizados
 
@@ -875,7 +878,7 @@ Efeitos:
 - Media: C.A. -3, Esquiva -3, RD Fisica +10.
 - Pesada: C.A. -6, Esquiva -6, RD Fisica +20.
 
-No app atual, esses estados sao inferidos pelo nome do equipamento equipado. Isso deve ser tratado como fragilidade conhecida.
+**Atualizado (Sprint 3):** o tipo de armadura agora e **explicito** (`armorType` por equipamento, controlado na aba Equipamentos). A inferencia por nome permanece apenas como fallback para fichas antigas sem `armorType`. Coeficientes inalterados.
 
 ### 8.7 HATE, Inversao e HOPE
 
@@ -930,7 +933,7 @@ Observacao: os blocos foram adicionados na aba Recursos em um card unico "Fluxo 
 | E2 | ~~CalculaDANO + HP restante~~ | **Concluido (Sprint 1)**. |
 | E3 | ~~CalculaPP + PP restante~~ | **Concluido (Sprint 1)**. |
 | E4 | ~~EXP, XP, pontos aplicados e LVL/NVL~~ | **Concluido (Sprint 2)**. |
-| E5 | Tipo de armadura explicito | Inferencia por nome e propensa a erro silencioso. |
+| E5 | ~~Tipo de armadura explicito~~ | **Concluido (Sprint 3)**: campo `armorType` + aba Equipamentos; inferencia por nome vira fallback. |
 
 ### Importantes
 
