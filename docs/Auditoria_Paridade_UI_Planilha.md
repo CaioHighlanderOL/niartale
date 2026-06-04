@@ -25,7 +25,7 @@
 | ID | Item | Planilha (vê / edita / controla) | Ficha (estado) | Classe |
 |---|---|---|---|---|
 | C1 | Tipo de armadura (Leve/Média/Pesada) | Vê e marca direto (`R21/R23/R25`) | Sem controle algum; nem aba de Equipamentos existe | Crítico |
-| I1 | Bônus adicional de Redução de Dano | Edita `Y15` (R.D. Fís.) e `Y16` (R.D. Mag.) + tabela Tipo/Qtd | Apenas vê R.FIS/R.MAG (read-only); sem input | Importante |
+| ~~I1~~ | ~~Bônus adicional de Redução de Dano~~ | Edita `Y15` (R.D. Fís.) e `Y16` (R.D. Mag.) | **Endereçado (Sprint 4):** `RD FIS`/`RD MAG` editáveis no card Buffs | ~~Importante~~ |
 | I2 | Condição Atual | Vê e edita texto livre (`T21`) separado de STATUS | Ausente (só existe `status`) | Importante |
 | I3 | HATE % / HOPE % | Vê percentuais (`C3`, `AA3`, `J32`, `T31`) | HATE só booleano; HOPE inexistente | Importante |
 | I4 | Bônus de perícia (com atributo base) | Vê coluna "Bônus" por perícia (`M`/`T`) | Vê um "+N" que não inclui o mod do atributo | Importante |

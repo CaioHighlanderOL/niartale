@@ -978,11 +978,13 @@ function renderStats(c) {
       })
     ),
     card("Buffs", [
-      node("div", "grid three",
-        ["for","agi","int","mag","con","hp","pp"].map((k) =>
+      node("div", "grid three", [
+        ...["for","agi","int","mag","con","hp","pp"].map((k) =>
           field(k.toUpperCase(), c.buffs[k], (v) => updateNested(c, ["buffs",k], Number(v||0)), { type:"number", refresh:true })
-        )
-      ),
+        ),
+        field("RD FIS", c.buffs.physicalReduction, (v) => updateNested(c, ["buffs","physicalReduction"], Number(v||0)), { type:"number", refresh:true }),
+        field("RD MAG", c.buffs.magicReduction, (v) => updateNested(c, ["buffs","magicReduction"], Number(v||0)), { type:"number", refresh:true }),
+      ]),
     ]),
     card("Condicoes", [
       node("div", "grid two", [

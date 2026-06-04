@@ -1,10 +1,10 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-03 (Sprint 3 de equipamentos)  
+**Ultima atualizacao:** 2026-06-03 (Sprint 4 de reducao de dano)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
-**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 3 (aba Equipamentos, equipar/desequipar e `armorType` explicito), mantendo o escopo das Sprints 1 e 2.
+**Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 4 (exposicao de `buffs.physicalReduction` / `buffs.magicReduction` como `RD FIS` / `RD MAG`), mantendo o escopo das Sprints 1, 2 e 3.
 
 > Este documento deve ser usado como ponto de partida por qualquer pessoa ou IA que continue o projeto. A planilha original e a implementacao atual devem ser tratadas como fontes primarias: se houver divergencia, conferir a celula exata da planilha antes de mudar regra de jogo.
 
@@ -593,6 +593,8 @@ Mapeamento principal:
 | `pp` | Y6, Buff PP |
 | `physicalReduction` | Y15 |
 | `magicReduction` | Y16 |
+
+**Atualizado (Sprint 4):** todos os buffs sao editaveis na aba Atributos (card "Buffs"), incluindo `physicalReduction` e `magicReduction`, expostos com rotulos legiveis `RD FIS` e `RD MAG`. Sao somados em `excelCalc` a `R.FIS`/`R.MAG` (sem alteracao de formula). R.D. Magica permanece independente de armadura.
 
 ### 7.6 Condicoes
 
