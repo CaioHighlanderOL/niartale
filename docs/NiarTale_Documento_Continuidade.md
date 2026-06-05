@@ -73,10 +73,9 @@ niartale-output/
 | `index.html` | Shell estatica da aplicacao: sidebar, topbar, containers das views, canvas e toast. |
 | `app.js` | Toda a logica de estado, autenticacao, renderizacao, CRUD, permissoes de UI, calculos da ficha e eventos. |
 | `styles.css` | Layout, tema visual, responsividade, componentes, HUD, tabs, listas e regras visuais de permissao. |
-| `firebase.js` | Bootstrap Firebase, Auth, Firestore, Storage, persistencia local e reexport das funcoes usadas em `app.js`. |
+| `firebase.js` | Bootstrap Firebase, Auth, Firestore, persistencia local e reexport das funcoes usadas em `app.js`. |
 | `firestore.rules` | Regras de seguranca para `users`, `campaigns`, `characters` e `diceLog`. |
-| `storage.rules` | Regras de seguranca para PDFs anexados em Firebase Storage. |
-| `firebase.json` | Configuracao de Firestore/Storage rules e Hosting estatico com rewrite SPA. |
+| `firebase.json` | Configuracao de Firestore rules e Hosting estatico com rewrite SPA. |
 | `.firebaserc` | Projeto Firebase padrao: `niartale-rpg-core`. |
 | `DEPLOY.md` | Passos operacionais de deploy e promocao manual de Mestre. |
 | `docs/Planilha Original.xlsx` | Fonte canonica das regras mecanicas da ficha. |
@@ -452,16 +451,6 @@ Para personagens:
 - pode falhar se outra aba ja possui persistencia;
 - app continua funcionando online.
 
-### 6.4.1 Storage (PDFs)
-
-`firebase.js` tambem inicializa `getStorage(app)` e reexporta `storageRef`, `uploadBytes`, `getDownloadURL` e `deleteObject` para anexos PDF. Arquivos enviados ficam em:
-
-```text
-characters/{characterId}/documents/{docId}-{filename}.pdf
-```
-
-Metadados ficam em `characters/{characterId}.documents[]` no Firestore. `storage.rules` limita acesso ao dono da ficha ou Mestre e aceita apenas PDF ate 10 MB.
-
 ### 6.5 Deploy
 
 `DEPLOY.md` indica:
@@ -469,9 +458,10 @@ Metadados ficam em `characters/{characterId}.documents[]` no Firestore. `storage
 1. conferir config em `firebase.js`;
 2. habilitar Authentication por Email/Senha;
 3. criar Cloud Firestore;
-4. habilitar Firebase Storage (necessario para upload de PDFs);
-5. rodar `firebase deploy`;
-6. promover Mestre manualmente no Firestore Console alterando `users/{uid}.role` para `master`.
+4. rodar `firebase deploy`;
+5. promover Mestre manualmente no Firestore Console alterando `users/{uid}.role` para `master`.
+
+Observacao: Firebase Storage **nao e utilizado** (plano Spark). PDFs sao referenciados exclusivamente por URL externa, persistida no Firestore.
 
 ---
 
@@ -786,16 +776,15 @@ Impacto em calculos:
 
 ```js
 {
-  id,
-  name,
-  url,
-  storagePath,
-  size,
-  uploadedAt
+  id,    // uid("doc")
+  name,  // rotulo amigavel
+  url    // URL externa do PDF
 }
 ```
 
-Atualizado (Sprint PDF): a aba Geral possui um card "Documentos (PDF)" com ate 10 anexos por ficha. O usuario pode adicionar PDF por URL externa ou enviar arquivo local para Firebase Storage. PDFs enviados sao armazenados em `characters/{characterId}/documents/...`; a ficha salva somente metadados e URL de download em `documents[]`. Abertura ocorre em popup com `iframe` e fallback "Abrir em nova aba". Fichas antigas sem `documents` normalizam para `[]` (lazy, sem migracao eager). O recurso nao altera `excelCalc` nem qualquer formula.
+Campos legados `storagePath`/`size`/`uploadedAt` podem existir em fichas antigas; sao preservados pelo spread em `normalizeDocumentItem` mas nao sao usados por nenhuma logica.
+
+A aba Geral possui um card "Documentos (PDF)" com ate 10 anexos por ficha. O usuario anexa PDFs por URL externa; abertura em popup (`iframe`) com fallback "Abrir em nova aba". Fichas antigas sem `documents` normalizam para `[]` (lazy, sem migracao eager). Firebase Storage **nao e usado** (plano Spark). O recurso nao altera `excelCalc` nem qualquer formula.
 
 ### 7.10 Campos Customizados
 

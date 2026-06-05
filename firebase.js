@@ -28,14 +28,6 @@ import {
   where,
   writeBatch,
 } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import {
-  deleteObject,
-  getDownloadURL,
-  getStorage,
-  ref as storageRef,
-  uploadBytes,
-} from "https://www.gstatic.com/firebasejs/10.12.5/firebase-storage.js";
-
 // Central Firebase bootstrap. Keeping this file small makes it easy to swap
 // environments later (dev/prod projects, emulator, or injected config).
 const firebaseConfig = {
@@ -50,7 +42,6 @@ const firebaseConfig = {
 export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const firestore = getFirestore(app);
-export const storage = getStorage(app);
 
 // Firebase Auth already persists by default in most browsers, but setting it
 // explicitly makes the requirement intentional and visible.
@@ -68,9 +59,7 @@ export {
   collection,
   createUserWithEmailAndPassword,
   deleteDoc,
-  deleteObject,
   doc,
-  getDownloadURL,
   getDoc,
   getDocs,
   limit,
@@ -82,10 +71,8 @@ export {
   setDoc,
   signInWithEmailAndPassword,
   signOut,
-  storageRef,
   updateDoc,
   updateProfile,
-  uploadBytes,
   where,
   writeBatch,
 };

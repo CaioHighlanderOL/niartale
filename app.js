@@ -1,9 +1,9 @@
 import {
   addDoc, auth, collection, createUserWithEmailAndPassword, deleteDoc,
-  deleteObject, doc, firestore, getDownloadURL, getDoc, getDocs, limit,
+  doc, firestore, getDoc, getDocs, limit,
   onAuthStateChanged, onSnapshot, orderBy, query, serverTimestamp, setDoc,
-  signInWithEmailAndPassword, signOut, storage, storageRef, updateDoc,
-  updateProfile, uploadBytes, where, writeBatch,
+  signInWithEmailAndPassword, signOut, updateDoc,
+  updateProfile, where, writeBatch,
 } from "./firebase.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -38,7 +38,6 @@ const SHEET_TABS = [
 ];
 const COMBAT_FLOW_SLOTS = 5;
 const MAX_PDFS_PER_CHARACTER = 10;
-const MAX_PDF_BYTES = 10 * 1024 * 1024;
 // Tipos de armadura explicitos (Sprint 3). "" = nenhum tipo definido.
 const ARMOR_TYPE_KEYS = ["", "leve", "media", "pesada"];
 const ARMOR_TYPE_LABELS = { "":"Nenhuma", leve:"Leve", media:"Media", pesada:"Pesada" };
@@ -440,14 +439,14 @@ function normalizeInventory(inventory) {
 
 function normalizeDocumentItem(item) {
   const src = item && typeof item === "object" ? item : {};
+  // Preserva chaves legadas (storagePath/size/uploadedAt) sem propaga-las
+  // em fichas novas. Nenhuma logica depende dessas chaves apos a migracao
+  // para PDF por URL.
   return {
     ...src,
     id: src.id || uid("doc"),
     name: String(src.name ?? ""),
     url: String(src.url ?? ""),
-    storagePath: String(src.storagePath ?? ""),
-    size: Math.max(0, Number(src.size || 0)),
-    uploadedAt: src.uploadedAt ?? null,
   };
 }
 
@@ -1061,23 +1060,10 @@ function renderDocuments(c) {
   const addUrlBtn = btn("+ PDF por URL", "primary-btn", () => addDocumentUrl(c));
   if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) addUrlBtn.disabled = true;
 
-  const uploadInput = document.createElement("input");
-  uploadInput.type = "file";
-  uploadInput.accept = "application/pdf";
-  uploadInput.hidden = true;
-  uploadInput.addEventListener("change", async () => {
-    const file = uploadInput.files?.[0];
-    uploadInput.value = "";
-    if (file) await uploadPdfDocument(c, file);
-  });
-
-  const uploadBtn = btn("Enviar PDF", "ghost-btn", () => uploadInput.click());
-  if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) uploadBtn.disabled = true;
-
-  const hint = node("p", "", `Limite: ${documents.length}/${MAX_PDFS_PER_CHARACTER} PDFs, ate 10 MB cada.`);
+  const hint = node("p", "", `Limite: ${documents.length}/${MAX_PDFS_PER_CHARACTER} PDFs.`);
   return collapsibleCard(c, "documents", "Documentos (PDF)", [
     list,
-    node("div", "pdf-actions", [addUrlBtn, uploadBtn, uploadInput]),
+    node("div", "pdf-actions", [addUrlBtn]),
     hint,
   ], { count: documents.length });
 }
@@ -1089,42 +1075,22 @@ function buildDocumentCard(c, item, canE) {
     if (idx !== -1) updateArrayItem(c, "documents", idx, patch);
   };
 
-  const meta = item.storagePath
-    ? node("p", "pdf-meta", `${formatBytes(item.size)} · arquivo enviado`)
-    : node("p", "pdf-meta", "URL externa");
-
-  const uploadInput = document.createElement("input");
-  uploadInput.type = "file";
-  uploadInput.accept = "application/pdf";
-  uploadInput.hidden = true;
-  uploadInput.addEventListener("change", async () => {
-    const file = uploadInput.files?.[0];
-    uploadInput.value = "";
-    if (file) await uploadPdfDocument(c, file, item.id);
-  });
-
+  const hasUrl = Boolean(String(item.url || "").trim());
   const openBtn = btn("Abrir PDF", "ghost-btn small-btn", () => openPdfPopup(item.url, item.name || "PDF"));
   const tabBtn = btn("Nova aba", "ghost-btn small-btn", () => openPdfInNewTab(item.url));
-  if (!String(item.url || "").trim()) {
-    openBtn.disabled = true;
-    tabBtn.disabled = true;
-  }
-
-  const replaceBtn = btn(item.storagePath ? "Substituir PDF" : "Enviar arquivo", "ghost-btn small-btn", () => uploadInput.click());
-  if (!canE) replaceBtn.disabled = true;
+  if (!hasUrl) { openBtn.disabled = true; tabBtn.disabled = true; }
 
   const removeBtn = btn("Remover", "danger-btn small-btn", async () => removeDocument(c, item.id));
   if (!canE) removeBtn.disabled = true;
 
   const grid = node("div", "grid two", [
     field("Nome", item.name, (v) => updateDocItem({ name: String(v || "").slice(0, 120) }), { disabled: !canE }),
-    field("URL", item.url, (v) => updateDocItem({ url: String(v || "").slice(0, 2048) }), { disabled: !canE || Boolean(item.storagePath) }),
+    field("URL", item.url, (v) => updateDocItem({ url: String(v || "").slice(0, 2048) }), { refresh: true, disabled: !canE }),
   ]);
 
   return collapsibleItemCard(c, "documents", item.id, item.name || "PDF", [
     grid,
-    meta,
-    node("div", "pdf-actions", [openBtn, tabBtn, replaceBtn, uploadInput]),
+    node("div", "pdf-actions", [openBtn, tabBtn]),
   ], removeBtn);
 }
 
@@ -1630,15 +1596,6 @@ async function duplicateCharacter() {
   if (!canEdit(src)) { toast("Sem permissao"); return; }
   const { id, createdAt, updatedAt, ...copy } = src;
   sanitizeCharacterForPersist(copy);
-  // I1: limpar storagePath dos documentos copiados para que remover/substituir
-  // PDF na copia nunca apague o arquivo fisico da ficha original. A url e
-  // preservada para que o PDF continue acessivel como referencia somente leitura.
-  if (Array.isArray(copy.documents)) {
-    copy.documents = copy.documents.map((docItem) => ({
-      ...docItem,
-      storagePath: "",
-    }));
-  }
   const ref = await addDoc(collection(firestore, "characters"), {
     ...copy,
     ownerId:   isMaster() ? copy.ownerId   : state.user.uid,
@@ -1688,65 +1645,9 @@ async function addDocumentUrl(c) {
   render();
 }
 
-async function uploadPdfDocument(c, file, existingId = null) {
-  if (!canEdit(c)) { toast("Sem permissao"); return; }
-  if (!c?.id || c.id === "new") { toast("Salve a ficha antes do upload"); return; }
-  if (!file) return;
-  const looksLikePdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-  if (!looksLikePdf) { toast("Envie apenas PDF"); return; }
-  if (file.size > MAX_PDF_BYTES) { toast("PDF acima de 10 MB"); return; }
-  if (!existingId && (c.documents || []).length >= MAX_PDFS_PER_CHARACTER) {
-    toast(`Limite de ${MAX_PDFS_PER_CHARACTER} PDFs`);
-    return;
-  }
-
-  const id = existingId || uid("doc");
-  const docs = c.documents || [];
-  const idx = docs.findIndex((item) => item.id === id);
-  const previous = idx !== -1 ? docs[idx] : null;
-  const path = `characters/${c.id}/documents/${id}-${safeStorageFileName(file.name)}`;
-
-  try {
-    const ref = storageRef(storage, path);
-    await uploadBytes(ref, file, { contentType: "application/pdf" });
-    const url = await getDownloadURL(ref);
-    const patch = normalizeDocumentItem({
-      id,
-      name: previous?.name || file.name.replace(/\.pdf$/i, ""),
-      url,
-      storagePath: path,
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-    });
-
-    c.documents = idx !== -1
-      ? docs.map((item, i) => i === idx ? { ...item, ...patch } : item)
-      : [...docs, patch];
-
-    if (previous?.storagePath && previous.storagePath !== path) {
-      deleteObject(storageRef(storage, previous.storagePath)).catch((e) => console.warn("Old PDF cleanup failed:", e));
-    }
-
-    markItemExpanded(c, "documents", id);
-    await saveChar(c, "PDF enviado");
-    render();
-  } catch (e) {
-    console.warn("PDF upload failed:", e);
-    toast("Falha ao enviar PDF");
-  }
-}
 
 async function removeDocument(c, id) {
   if (!canEdit(c)) { toast("Sem permissao"); return; }
-  const item = (c.documents || []).find((docItem) => docItem.id === id);
-  if (!item) return;
-  if (item.storagePath) {
-    try {
-      await deleteObject(storageRef(storage, item.storagePath));
-    } catch (e) {
-      console.warn("PDF storage deletion failed:", e);
-    }
-  }
   c.documents = (c.documents || []).filter((docItem) => docItem.id !== id);
   await saveChar(c, "PDF removido");
   render();
@@ -2170,23 +2071,6 @@ function openPdfInNewTab(url) {
   if (win) win.opener = null;
 }
 
-function safeStorageFileName(name) {
-  const cleaned = String(name || "documento.pdf")
-    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 80);
-  return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned || "documento"}.pdf`;
-}
-
-function formatBytes(bytes) {
-  const n = Number(bytes || 0);
-  if (!n) return "0 B";
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function sectionTitle(title, subtitle) {
   return node("header", "section-title", [label_(title.toUpperCase()), node("p","",subtitle)]);
