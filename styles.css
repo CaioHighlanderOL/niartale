@@ -636,6 +636,8 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
 .pdf-win--min {
   resize: none !important;
   grid-template-rows: auto 0 0;
+  min-height: 0 !important; /* colapsa ate a barra de titulo */
+  height: auto !important;
 }
 
 .pdf-win--min .pdf-win-body,

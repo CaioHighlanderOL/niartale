@@ -2231,6 +2231,7 @@ function openPdfWindow(url, name = "PDF", isObjectUrl = false) {
   let winH = saved.h ?? defH;
   let isMaximized = saved.maximized ?? false;
   let isMinimized = false;
+  let isDragging  = false; // bloqueia ResizeObserver durante arrasto
 
   const win = node("div", "pdf-win", [], {
     role: "dialog", "aria-label": `PDF: ${name}`,
@@ -2270,17 +2271,35 @@ function openPdfWindow(url, name = "PDF", isObjectUrl = false) {
   function clampX(x) { return Math.max(0, Math.min(x, window.innerWidth - 120)); }
   function clampY(y) { return Math.max(0, Math.min(y, window.innerHeight - 40)); }
 
+  // Define APENAS a posicao (left/top). Nao toca em width/height.
+  // Chamada durante o drag para evitar que cssText reescreva o tamanho
+  // e provoque disparo espurio do ResizeObserver.
+  function applyPosition() {
+    win.style.left = `${clampX(winX)}px`;
+    win.style.top  = `${clampY(winY)}px`;
+  }
+
+  // Define geometria completa: chamada na abertura, restauracao min/max
+  // e transicoes de estado onde width/height precisam ser definidos.
   function applyGeometry() {
     if (isMaximized) {
       win.style.cssText = "left:0;top:0;width:100vw;height:100dvh;";
       win.classList.add("pdf-win--max");
       win.classList.remove("pdf-win--min");
     } else if (isMinimized) {
-      win.style.cssText = `left:${clampX(winX)}px;top:${clampY(winY)}px;width:${winW}px;`;
+      // Restaura posicao e largura; altura e controlada pelo CSS (grid colapsado).
+      win.style.left   = `${clampX(winX)}px`;
+      win.style.top    = `${clampY(winY)}px`;
+      win.style.width  = `${winW}px`;
+      win.style.height = "";
       win.classList.add("pdf-win--min");
       win.classList.remove("pdf-win--max");
     } else {
-      win.style.cssText = `left:${clampX(winX)}px;top:${clampY(winY)}px;width:${winW}px;height:${winH}px;`;
+      // Estado normal: define todos os quatro valores explicitamente.
+      win.style.left   = `${clampX(winX)}px`;
+      win.style.top    = `${clampY(winY)}px`;
+      win.style.width  = `${winW}px`;
+      win.style.height = `${winH}px`;
       win.classList.remove("pdf-win--max", "pdf-win--min");
     }
   }
@@ -2293,6 +2312,7 @@ function openPdfWindow(url, name = "PDF", isObjectUrl = false) {
     isMinimized = !isMinimized;
     if (isMinimized) isMaximized = false;
     applyGeometry();
+    // Nao persiste dimensoes ao minimizar; winW/winH permanecem intactos.
   }
 
   function toggleMaximize() {
@@ -2313,34 +2333,39 @@ function openPdfWindow(url, name = "PDF", isObjectUrl = false) {
   function onKeyDown(ev) { if (ev.key === "Escape") close(); }
   document.addEventListener("keydown", onKeyDown);
 
-  // Arrastar pela barra de titulo
-  let dragging = false, dStartX, dStartY, dOrigX, dOrigY;
+  // ─── Drag: arrasto pela barra de titulo ─────────────────────────────────────
+  // pointermove chama apenas applyPosition() para nao tocar em width/height
+  // e nao disparar o ResizeObserver. isDragging bloqueia o observer em paralelo.
+  let dStartX, dStartY, dOrigX, dOrigY;
   titleBar.addEventListener("pointerdown", (ev) => {
     if (isMaximized) return;
     if (ev.target === minBtn || ev.target === maxBtn || ev.target === closeWinBtn) return;
-    dragging = true;
+    isDragging = true;
     dStartX = ev.clientX; dStartY = ev.clientY;
     dOrigX = winX; dOrigY = winY;
     titleBar.setPointerCapture(ev.pointerId);
     ev.preventDefault();
   });
   titleBar.addEventListener("pointermove", (ev) => {
-    if (!dragging) return;
+    if (!isDragging) return;
     winX = dOrigX + (ev.clientX - dStartX);
     winY = dOrigY + (ev.clientY - dStartY);
-    applyGeometry();
+    applyPosition(); // so posicao; nao altera winW/winH nem dispara ResizeObserver
   });
   titleBar.addEventListener("pointerup", () => {
-    if (!dragging) return;
-    dragging = false;
-    persist();
+    if (!isDragging) return;
+    isDragging = false;
+    persist(); // persiste posicao final apos soltar
   });
 
-  // Rastrear redimensionamento manual (resize:both CSS)
-  const ro = new ResizeObserver(([entry]) => {
-    if (isMaximized || isMinimized) return;
-    winW = Math.round(entry.contentRect.width);
-    winH = Math.round(entry.contentRect.height);
+  // ─── ResizeObserver: rastreia redimensionamento real pelo usuario ────────────
+  // Usa offsetWidth/offsetHeight (largura/altura externas, incluindo borda)
+  // em vez de contentRect (que exclui bordas e provocaria encolhimento progressivo
+  // a cada leitura/escrita). Ignorado durante drag e nos estados min/max.
+  const ro = new ResizeObserver(() => {
+    if (isMaximized || isMinimized || isDragging) return;
+    winW = win.offsetWidth;
+    winH = win.offsetHeight;
     persist();
   });
   ro.observe(win);
