@@ -1,149 +1,120 @@
 # Roadmap Atualizado — NiarTale
 
-**Data:** 2026-06-03
-**Base:** `docs/Roadmap.md`, `docs/NiarTale_Documento_Continuidade.md`
-**Natureza:** atualização de status. Nenhuma alteração de código foi realizada.
+**Data:** 2026-06-05
+**Base:** `docs/Roadmap.md`, `docs/Estado_Atualizado.md`, `docs/NiarTale_Documento_Continuidade.md`
+**Legenda:** ✅ concluído · 🔄 em andamento · ⏳ pendente · 🆕 novo (sem especificação) · 📝 especificado
 
-Legenda de status:
-- ✅ **Concluído**
-- 🔄 **Em andamento**
-- ⏳ **Pendente**
-
-Marcos concluídos nesta linha do tempo:
-- ✅ Sprint Raça/Sub-raça (2026-06-02)
-- ✅ Sprint 1 — Estado de combate (HATE, Inversão, Dano/Cura/PP, HP/PP Restante)
-- ✅ Sprint 2 — Progressão (EXP, XP, Aplicados, NVL) + correção Level/Nível
+> Sincronizado com o estado real. Marcos: Sprints 1–4 (paridade), Raça/Sub-raça, UX-1 (colapso por seção **e por item**) e Boneco Mágico concluídos. **P1 encerrado por fidelidade.** Restam fidelidade fina, usabilidade, personalização e uma decisão de produto (EN).
 
 ---
 
-## Resumo executivo de status
+## ✅ Concluído
 
-| Área | Status |
-|---|---|
-| Raça/Sub-raça estruturadas | ✅ Concluído |
-| HATE/Inversão na UI | ✅ Concluído (Sprint 1) |
-| CalculaDANO/CalculaCURA/HP Restante | ✅ Concluído (Sprint 1) |
-| CalculaPP/PP Recuperado/PP Restante | ✅ Concluído (Sprint 1) |
-| Progressão EXP/XP/Aplicados/NVL | ✅ Concluído (Sprint 2) |
-| Consolidar fonte de verdade (planilha) | 🔄 Em andamento (contínuo) |
-| Trilha de validação de cálculos | ⏳ Pendente |
-| Tipo de armadura explícito | ⏳ Pendente (alvo Sprint 3) |
-| Total de perícia com atributo base | ⏳ Pendente (alvo Sprint 3) |
-| HATE/HOPE percentuais | ⏳ Pendente |
-| Condição Atual formalizada | ⏳ Pendente |
-| Theme Song | ⏳ Pendente |
-| HUD com CASH/derivados | ⏳ Pendente |
-| UX de edição e proteções | ⏳ Pendente |
-| Evolução visual | ⏳ Pendente |
-
----
-
-## 1. Fundamentos (governança de regra)
-
-### 1.1 Consolidar fonte de verdade e critérios de aceite — 🔄 Em andamento
-- Planilha permanece como fonte canônica; `excelCalc()` como implementação auditada.
-- Prática contínua: toda mudança de regra cita célula/fórmula/impacto.
-- **Observação:** seguido nas Sprints 1 e 2 (cada entrega referenciou células `W18:X30`, `H13`, `H14`, etc.).
-
-### 1.2 Preparar trilha de validação de cálculos — ⏳ Pendente
-- Bateria mínima por raça/sub-raça e por HATE/Inversão/armadura/buffs ainda **não automatizada**.
-- Validação atual é **manual** (sem suíte de testes no projeto).
-- Recomendado antes de Sprint 3 (Perícias/Armadura têm acoplamento com derivados).
-
-### 1.3 Raça e Sub-raça estruturadas — ✅ Concluído (2026-06-02)
-- Detalhes em `docs/NiarTale_Relatorio_Raca_SubRaca.md`.
+| Item | Entrega | Planilha / Origem | Referência |
+|---|---|---|---|
+| Raça e Sub-raça estruturadas | 2026-06-02 | E8, G8, `SUB_RACE_SR` | `NiarTale_Relatorio_Raca_SubRaca.md` |
+| HATE e Inversão na ficha | Sprint 1 | U24, U26 | `Relatorio_Implementacao_Sprint1_Paridade.md` |
+| CalculaDANO / CalculaCURA / HP Restante | Sprint 1 | W18:X23, Y18:Y23, K24 | idem |
+| CalculaPP / PP Recuperado / PP Restante | Sprint 1 | W25:X30, Y25:Y30, K27 | idem |
+| Progressão: EXP, XP, Aplicados, LV/NVL | Sprint 2 | F13, F14, H13, H14 | `Relatorio_Implementacao_Sprint2_Progressao.md` |
+| Aba Equipamentos + equipar/desequipar | Sprint 3 | inventário/armadura | `Relatorio_Implementacao_Sprint3_Equipamentos.md` |
+| Tipo de armadura explícito (Leve/Média/Pesada) | Sprint 3 | R21, R23, R25 | idem |
+| `RD FIS` / `RD MAG` editáveis | Sprint 4 | Y15, Y16 | `Relatorio_Implementacao_Sprint4_RD.md` |
+| Seções colapsáveis (por seção) | UX-1 | — | `Relatorio_Implementacao_Sprint_UX1.md` |
+| **Cards colapsáveis por item + nome/renomeação** | UX-1 (cards) | — | `Auditoria_Sprint_UX1.md` (**GO**) |
+| **Sub-raça Boneco Mágico** (nominal) | — | adição do sistema | `Relatorio_Implementacao_Boneco_Magico.md` |
+| **D1 — EN/Energia (depreciação de UI)** | 2026-06-05 | decisão de produto | `Decisao_EN.md`, `Relatorio_EN.md` |
+| Correção de Campos Extras (Almas/ id / "Sub-raca") | — | — | `Relatorio_Correcao_Campos_Extras.md` |
+| Bateria de testes de regressão (ex-P8) | — | múltiplas células | `Testes_Regressao.md` |
+| **P1 — Perícia com atributo base** | **Encerrado por fidelidade** | M6:M18, T6:T18 | `Especificacao_Sprint5_Pericias.md` |
 
 ---
 
-## 2. Sprints de paridade concluídas
+## 🔄 Em andamento (governança contínua)
 
-### 2.1 Sprint 1 — Estado de combate — ✅ Concluído
-- **HATE e Inversão na UI** (`U24`/`U26`): toggles em Atributos e Recursos; cálculo imediato; distinção +30 (atributos) vs +16 (R.D.); INT sem HATE/Inversão preservado.
-- **CalculaDANO + HP Restante** (`W18:X23`, `K24`): bloco de 5 entradas; `HP Restante = hpMax - dano + cura`.
-- **CalculaCURA** (`Y18:Y23`).
-- **CalculaPP + PP Restante** (`W25:X30`, `K27`): `PP Restante = ppMax - gasto + recuperação`.
-- **PP Recuperado** (`Y25:Y30`).
-- Referências: `docs/Relatorio_Implementacao_Sprint1_Paridade.md`.
+### G1. Consolidar fonte de verdade e critérios de aceite
+**Prioridade:** transversal (fidelidade à planilha)
 
-### 2.2 Sprint 2 — Progressão — ✅ Concluído
-- **EXP** (`F13`) e **XP** (`F14`): campos manuais.
-- **Aplicados** (`H13 = SUM(F15:F24)`): derivado read-only.
-- **NVL** (`H14`): `nvl` manual, somado a `lv` existente.
-- **Correção Level/Nível:** visor read-only `LV/NVL` removido; `LEVEL` e `NIVEL` agora editáveis e independentes.
-- Referências: `docs/Especificacao_Sprint2_Progressao.md`, `docs/Relatorio_Implementacao_Sprint2_Progressao.md`, `docs/Auditoria_Sprint2_Progressao.md`, `docs/Relatorio_Correcao_Level_Nivel.md`.
-- **Status de release:** GO (avaliação final aprovada; testes manuais aprovados).
+- Planilha = fonte canônica; `excelCalc()` = implementação auditada dos derivados.
+- Preservar correções D1-D18; não reabrir sem evidência por célula.
+- Toda mudança de regra registra: célula, fórmula original, comportamento atual e impacto.
+
+**Critério de pronto:** qualquer tarefa que afete cálculo cita célula/área da planilha.
 
 ---
 
-## 3. Sprint 3 (próxima) — Correções de fidelidade
+## 🆕 Feedbacks recentes a tratar
 
-### 3.1 Tipo de armadura explícito — ⏳ Pendente
-- Planilha: `R21`, `R23`, `R25`, `F26`, `H28`, `X15`.
-- Hoje `armorState()` infere por texto do nome/slot.
-- Plano: campo `armorType` (nenhuma/leve/média/pesada) + **fallback por nome** (retrocompatível); atualizar doc de `equipment`; migração suave em `normalizeCharacter()`.
-- **Risco:** alto se adiado (C.A./Esquiva/RD físicas erradas sem aviso). Alimenta derivados de `excelCalc` → exige teste de não-regressão.
+### F-A. Fontes personalizadas por ficha 📝
+**Status:** especificado; **não implementado** · **Referência:** `Especificacao_Sprint_Personalizacao.md`
+- Escopo: Padrão/Serif/Fantasia/Manuscrita via `theme.font` + `--char-font`. Sem impacto mecânico. Pronto para implementar.
 
-### 3.2 Total de perícia com atributo base — ⏳ Pendente
-- Planilha: `M6:M18`, `T6:T18`, `F28`, `F30`.
-- Hoje a lista mostra Treinado/Mestre/Extra, sem somar o modificador do atributo base.
-- Plano: confirmar mapa perícia→atributo; exibir total **sem** quebrar INI/ESQ (Reflexo) e P.A (Percepção).
-- **Risco:** 🔴 — `skillBonus` é reutilizado em `excelCalc`; isolar "total exibido" do "bônus consumido nos derivados".
+### F-B. Imagens em habilidades/itens 🆕
+**Status:** novo; **sem especificação** · **Risco:** baixo-médio
+- Permitir imagem (URL) por habilidade/item de inventário. Decidir: campo `imageUrl` por item, exibição no card, limites e performance (lazy-load).
+- **Próximo passo:** criar especificação técnica antes de implementar.
 
-### 3.3 Decisão de produto pendente da Sprint 2 (carregada p/ Sprint 3) — ⏳ Pendente
-- Definir se **NIVEL (`nvl`)** deve ter edição exclusiva de Mestre (item M2 da auditoria), já que Sprint 3 mexe em campos/permissões de ficha.
+### F-C. PDF na ficha 🆕
+**Status:** implementado · **Referência:** `Especificacao_PDF_Ficha.md`, `Relatorio_Implementacao_PDF_Ficha.md`
+- Escopo definido como **anexar/visualizar PDFs** na ficha: múltiplos documentos por ficha, URL externa e upload via Firebase Storage, popup com fallback em nova aba.
 
 ---
 
-## 4. Backlog posterior (Depois)
+## ⏳ Pendente — Prioridade Alta
 
-### 4.1 CalculaDANO/CalculaCURA/HP Restante — ✅ Concluído (antecipado na Sprint 1)
-- Item originalmente listado em "Depois" do roadmap antigo; entregue na Sprint 1.
-
-### 4.2 CalculaPP/PP Recuperado/PP Restante — ✅ Concluído (antecipado na Sprint 1)
-- Idem; entregue na Sprint 1.
-
-### 4.3 Progressão EXP/XP/Aplicados/LVL-NVL — ✅ Concluído (Sprint 2)
-- Pendência menor de produto: significado canônico de "Nível" (teto de campanha vs. nota livre).
-
-### 4.4 HATE e HOPE percentuais — ⏳ Pendente
-- Planilha: `C3`, `J31:J32`, `AA3`, `T30:T31`.
-- HATE existe como booleano mecânico; HOPE não existe como recurso estruturado.
-- **Risco:** alto (pode mudar a origem do maior modificador mecânico). Confirmar semântica antes.
-
-### 4.5 Formalizar Condição Atual — ⏳ Pendente
-- Planilha: `T21`. Decidir se `status` basta ou se cria `conditionText`.
+### P2. Modelar HATE e HOPE percentuais
+**Status:** ⏳ pendente · **Planilha:** C3, J31:J32, AA3, T30:T31
+**Pré-requisito:** definir a regra (origem, limites, efeito) antes de codar.
+- HATE hoje é booleano; HOPE não existe como recurso. Decidir se `hateBoost` continua manual ou vira derivado de um limiar.
+**Risco:** alto se acoplado ao boost de +30; baixo se entrar como visor manual desacoplado.
 
 ---
 
-## 5. Futuro (UX/visual, após estabilizar regra e dados)
+## ⏳ Pendente — Prioridade Média/Baixa (Opcional)
 
-### 5.1 Theme Song como campo padrão — ⏳ Pendente (`M47`)
-### 5.2 HUD com CASH e derivados — ⏳ Pendente (`G30/H30`)
-### 5.3 UX de edição e proteções contra erro — ⏳ Pendente
-- Validar ranges; melhorar toasts; destacar HP/PP acima do máximo; avisar fichas migradas/fallback.
-### 5.4 Evolução visual — ⏳ Pendente
-- Preservar identidade retro-pixel; só após correções mecânicas e de dados.
+### P3. Separar/formalizar Condição Atual
+**Planilha:** T21 · **Risco:** muito baixo — campo dedicado de condição de combate, separado de `status`.
 
----
+### P4. Theme Song como campo padrão
+**Planilha:** M47 · **Risco:** muito baixo — campo de texto na aba Geral/História.
 
-## 6. Pendências técnicas transversais (registradas)
+### P5. CASH na HUD
+**Planilha:** G30/H30 · **Risco:** muito baixo — expor CASH no HUD sem redesign.
 
-| Item | Origem | Status |
-|---|---|---|
-| Materialização lazy de `exp/xp/nvl` no doc cru (I2) | Auditoria Sprint 2 | ⏳ Pendente (documentado; sem impacto no app) |
-| Clamp `>= 0` de EXP/XP sem equivalente na planilha (M1) | Auditoria Sprint 2 | ⏳ Aceito/registrar |
-| `nvl` editável por qualquer dono (M2) | Auditoria Sprint 2 | ⏳ Decisão de produto (Sprint 3) |
-| Atualização não-imediata de métricas durante digitação (M3) | Auditoria Sprint 2 | ⏳ Aceito (padrão do app) |
-| Recurso EN sem equivalente na planilha | Análise EN | ⏳ Pendente (decisão: manter/deprecar/remover) |
-| Trilha de testes automatizados | Roadmap 1.2 | ⏳ Pendente |
+### P6. Reduções de Dano como tabela (Tipo/Quantidade)
+**Planilha:** W12/W14/X14/Y14 · **Risco:** baixo — estrutura tabular granular; aditivo.
+
+### P7. Validação/orçamento de pontos aplicados
+**Planilha:** H13 vs EXP/XP · **Risco:** baixo — trava/feedback de orçamento (decisão de design).
+
+### P9. Refinar UX de edição e proteções contra erro
+**Risco:** baixo-médio — validar ranges; toasts; destacar HP/PP acima do máximo; avisar fallback por nome.
 
 ---
 
-## 7. Sequência recomendada
+## ⏳ Pendente — Por último
 
-1. **Sprint 3** — Armadura explícita (3.1) e Total de perícia (3.2), com teste de não-regressão de derivados; decidir M2.
-2. **Validação de cálculos (1.2)** — idealmente antes/junto da Sprint 3.
-3. **HATE/HOPE percentuais (4.4)** e **Condição Atual (4.5)**.
-4. **Futuro UX/visual (5.x)** apenas após estabilização mecânica.
+### P10. Evoluir visual após estabilizar regra e dados
+**Risco:** médio se feito cedo — preservar identidade retro-pixel; melhorar legibilidade só onde houver problema comprovado.
 
-*Fim do roadmap atualizado. Nenhuma alteração de código foi realizada.*
+---
+
+## Decisão de produto aplicada
+
+### D1. EN/Energia — **DEPRECADO na UI**
+- Extra do app **sem equivalente** na planilha.
+- Decisão aplicada: remover EN da UI (barras e edição) e parar de criar EN em fichas novas.
+- Compatibilidade legada preservada: fichas antigas com `resources.energy` continuam válidas, sem migração eager.
+
+---
+
+## Sequência recomendada
+
+1. **F-A** (fontes personalizadas) → já especificado, baixo risco, ganho de personalização.
+2. **F-B / F-C** (imagens em itens; PDF) → **especificar** antes de implementar.
+3. **P2** (HATE/HOPE %) → após definir a regra.
+4. **P3, P4, P5** (Condição Atual, Theme Song, CASH HUD) → ganhos rápidos de UX.
+5. **P6, P7** (tabela R.D., validação de pontos) → modelos/regra novos.
+6. **P9, P10** (UX e visual) → fechamento.
+
+*Itens concluídos desde a versão anterior: UX-1 cards por item, Boneco Mágico, correção de Campos Extras, bateria de testes (ex-P8) e encerramento do P1. Nenhuma alteração de código foi realizada nesta sincronização.*

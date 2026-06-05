@@ -1,8 +1,9 @@
 import {
   addDoc, auth, collection, createUserWithEmailAndPassword, deleteDoc,
-  doc, firestore, getDoc, getDocs, limit, onAuthStateChanged, onSnapshot, orderBy,
-  query, serverTimestamp, setDoc, signInWithEmailAndPassword, signOut,
-  updateDoc, updateProfile, where, writeBatch,
+  deleteObject, doc, firestore, getDownloadURL, getDoc, getDocs, limit,
+  onAuthStateChanged, onSnapshot, orderBy, query, serverTimestamp, setDoc,
+  signInWithEmailAndPassword, signOut, storage, storageRef, updateDoc,
+  updateProfile, uploadBytes, where, writeBatch,
 } from "./firebase.js";
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -36,21 +37,44 @@ const SHEET_TABS = [
   ["notes","Notas"],["history","Historia"],["resources","Recursos"],
 ];
 const COMBAT_FLOW_SLOTS = 5;
+const MAX_PDFS_PER_CHARACTER = 10;
+const MAX_PDF_BYTES = 10 * 1024 * 1024;
 // Tipos de armadura explicitos (Sprint 3). "" = nenhum tipo definido.
 const ARMOR_TYPE_KEYS = ["", "leve", "media", "pesada"];
 const ARMOR_TYPE_LABELS = { "":"Nenhuma", leve:"Leve", media:"Media", pesada:"Pesada" };
+
+// Fontes personalizadas por ficha (Sprint Fontes). Afetam apenas --char-font (conteudo);
+// HUD/numeros continuam em --pixel. "padrao" equivale ao visual atual.
+const FONT_KEYS   = ["padrao", "serif", "fantasia", "manuscrita", "medieval"];
+const FONT_LABELS = {
+  padrao:"Padrao", serif:"Serif", fantasia:"Fantasia",
+  manuscrita:"Manuscrita", medieval:"Medieval",
+};
+// Mapeamento chave → font stack. Medieval usa fonte web self-hosted como primeiro valor;
+// o fallback generico (serif) garante render offline ou quando a fonte nao carrega.
+function fontStackFor(key) {
+  return ({
+    padrao:     `var(--sans)`,
+    serif:      `Georgia, "Times New Roman", serif`,
+    fantasia:   `"Papyrus", "Luminari", fantasy`,
+    manuscrita: `"Segoe Script", "Bradley Hand", "Comic Sans MS", cursive`,
+    medieval:   `"MedievalSharp", "UnifrakturCook", "Old English Text MT", serif`,
+  })[key] || `var(--sans)`;
+}
 
 // Chaves canônicas persistidas no Firestore (ver docs/Especificacao_Raca_SubRaca.md)
 const RACE_KEYS = ["humano", "monstro", "nenhum"];
 const SUB_RACE_KEYS = [
   "nenhum", "anfibio", "esqueleto", "elemental", "fantasma",
   "reptil", "alcadethes", "aranha", "flor", "parasita", "variados",
+  "boneco magico",
 ];
 const RACE_LABELS = { humano: "Humano", monstro: "Monstro", nenhum: "Nenhum" };
 const SUB_RACE_LABELS = {
   nenhum: "Nenhum", anfibio: "Anfíbio", esqueleto: "Esqueleto", elemental: "Elemental",
   fantasma: "Fantasma", reptil: "Réptil", alcadethes: "Alcadethes", aranha: "Aranha",
   flor: "Flor", parasita: "Parasita", variados: "Variados",
+  "boneco magico": "Boneco Mágico",
 };
 const RACE_ALIASES = {
   humana: "humano", human: "humano",
@@ -94,6 +118,19 @@ function stripSubRaceCustomFields(fields) {
   return (fields || []).filter((f) => norm(f.label) !== "sub-raca");
 }
 
+// Garante que todo campo extra tenha id (fichas antigas sem id ficavam
+// ineditaveis/inremoviveis, pois editar/excluir operam por id). Aditivo e
+// idempotente: preserva ids existentes e nao altera label/value preenchidos.
+function normalizeCustomFields(fields) {
+  if (!Array.isArray(fields)) return [];
+  return fields.map((f) => ({
+    ...f,
+    id: f?.id || uid("cf"),
+    label: f?.label ?? "",
+    value: f?.value ?? "",
+  }));
+}
+
 function hasSubRaceCustomField(fields) {
   return (fields || []).some((f) => norm(f.label) === "sub-raca");
 }
@@ -101,17 +138,19 @@ function hasSubRaceCustomField(fields) {
 function applyRaceSubRaceNormalization(merged, rawData = {}) {
   const legacySubRaw = customFieldVal(merged, "Sub-raca");
   const mergedSubKey = resolveSubRaceKey(merged.subRace ?? "");
+  const subRaceAlreadyValid = mergedSubKey !== "nenhum";
   // Se subRace já vier válido e diferente de "nenhum", ele prevalece sobre custom legado.
-  const subRaw = mergedSubKey !== "nenhum" ? mergedSubKey : (legacySubRaw ?? merged.subRace ?? "nenhum");
+  const subRaw = subRaceAlreadyValid ? mergedSubKey : (legacySubRaw ?? merged.subRace ?? "nenhum");
   const rawRaceInput = [rawData.race, rawData.ancestry, merged.race].find((v) => String(v ?? "").trim() !== "") ?? "nenhum";
   const raceKey = resolveRaceKey(rawRaceInput);
   const subRaceKey = resolveSubRaceKey(subRaw);
 
-  let customFields = stripSubRaceCustomFields(merged.customFields);
-  if (!customFields.some((f) => norm(f.label) === norm("Almas"))) {
-    const almas = defaultCharacter().customFields.find((f) => norm(f.label) === norm("Almas"));
-    if (almas) customFields = [...customFields, { ...almas, id: uid("cf") }];
-  }
+  // I2: backfill de id em todo campo extra.
+  // I3: so remove o custom "Sub-raca" quando ele e a fonte da migracao (subRace
+  // ainda nao resolvido). Se subRace ja e valido, preserva campos do usuario,
+  // evitando perda silenciosa de um campo legitimamente chamado "Sub-raca".
+  let customFields = normalizeCustomFields(merged.customFields);
+  if (!subRaceAlreadyValid) customFields = stripSubRaceCustomFields(customFields);
 
   const migration = { ...(merged._migration || rawData._migration || {}) };
   const rawRace = rawRaceInput;
@@ -177,12 +216,15 @@ function ensureCharacterRaceSubRace(c) {
   if (!c) return { race: "nenhum", subRace: "nenhum" };
   const race = resolveRaceKey(c.race);
   const subKey = norm(c.subRace ?? "");
-  const subRace = SUB_RACE_KEYS.includes(subKey)
+  const subRaceFromKey = SUB_RACE_KEYS.includes(subKey);
+  const subRace = subRaceFromKey
     ? subKey
     : resolveSubRaceKey(customFieldVal(c, "Sub-raca") ?? c.subRace);
   c.race = race;
   c.subRace = subRace;
-  if (hasSubRaceCustomField(c.customFields)) {
+  // I3: so remove o custom "Sub-raca" quando ele foi a fonte do valor (subRace
+  // nao veio de uma chave valida). Caso contrario, preserva campos do usuario.
+  if (!subRaceFromKey && hasSubRaceCustomField(c.customFields)) {
     c.customFields = stripSubRaceCustomFields(c.customFields);
   }
   return { race, subRace };
@@ -221,7 +263,11 @@ function sanitizeCharacterForPersist(c) {
   c.xp = Math.max(0, Number(c.xp || 0));
   c.nvl = Math.max(0, Number(c.nvl || 0));
   c.combat = normalizeCombatState(c.combat);
+  c.abilities = normalizeAbilities(c.abilities);
+  c.inventory = normalizeInventory(c.inventory);
   c.equipment = normalizeEquipment(c.equipment);
+  c.documents = normalizeDocuments(c.documents);
+  if (c.theme && !FONT_KEYS.includes(c.theme.font)) c.theme = { ...c.theme, font: "padrao" };
 
   if (rawRace != null && String(rawRace).trim() && normalized.race === "nenhum" && !isKnownRaceInput(rawRace)) {
     warnings.push(`Raca "${rawRace}" nao reconhecida; salva como Nenhum.`);
@@ -258,6 +304,16 @@ let currentView = "sheet";
 let currentTab  = "general";
 let selectedCharacterId = null;
 let toastTimer;
+
+// Estado de colapso das secoes (Sprint UX-1). Efemero por sessao: NAO persiste
+// no Firestore e nao altera o modelo da ficha. Chave = `${characterId}:${secao}`.
+const collapsedSections = {};
+
+// Estado de expansao por item (Sprint UX-1: cards colapsaveis individuais).
+// Efemero por sessao; NAO persiste e nao altera o modelo. Default = recolhido
+// (item ausente do Set). Item recem-criado e marcado como expandido.
+// Chave = `${characterId}:${categoria}:${itemId}`.
+const expandedItems = new Set();
 let unsubscribers = [];
 let campaignSaveTimer;
 
@@ -291,7 +347,7 @@ function uid(prefix = "id") {
 }
 
 function defaultTheme() {
-  return { type: "linear", angle: 135, colors: ["#ff4fd8", "#6ee7ff", "#ffe66d"] };
+  return { type: "linear", angle: 135, colors: ["#ff4fd8", "#6ee7ff", "#ffe66d"], font: "padrao" };
 }
 
 function normalizeCombatSeries(series) {
@@ -344,6 +400,62 @@ function normalizeEquipment(equipment) {
   return equipment.map(normalizeEquipmentItem);
 }
 
+// Sprint Imagens: normaliza itens de Habilidades/Inventario garantindo `imageUrl`.
+// Migracao lazy/aditiva: fichas antigas sem o campo recebem "".
+function normalizeAbilityItem(item) {
+  const src = item || {};
+  return {
+    id: src.id || uid("ab"),
+    name: src.name ?? "",
+    cost: src.cost ?? "",
+    effects: src.effects ?? "",
+    description: src.description ?? "",
+    observations: src.observations ?? "",
+    imageUrl: src.imageUrl ?? "",
+  };
+}
+
+function normalizeInventoryItem(item) {
+  const src = item || {};
+  return {
+    id: src.id || uid("it"),
+    name: src.name ?? "",
+    description: src.description ?? "",
+    qty: Number(src.qty ?? 0),
+    weight: Number(src.weight ?? 0),
+    observations: src.observations ?? "",
+    imageUrl: src.imageUrl ?? "",
+  };
+}
+
+function normalizeAbilities(abilities) {
+  if (!Array.isArray(abilities)) return [];
+  return abilities.map(normalizeAbilityItem);
+}
+
+function normalizeInventory(inventory) {
+  if (!Array.isArray(inventory)) return [];
+  return inventory.map(normalizeInventoryItem);
+}
+
+function normalizeDocumentItem(item) {
+  const src = item && typeof item === "object" ? item : {};
+  return {
+    ...src,
+    id: src.id || uid("doc"),
+    name: String(src.name ?? ""),
+    url: String(src.url ?? ""),
+    storagePath: String(src.storagePath ?? ""),
+    size: Math.max(0, Number(src.size || 0)),
+    uploadedAt: src.uploadedAt ?? null,
+  };
+}
+
+function normalizeDocuments(documents) {
+  if (!Array.isArray(documents)) return [];
+  return documents.map(normalizeDocumentItem);
+}
+
 function defaultCharacter(overrides = {}) {
   return {
     ownerId:    state.user?.uid || "",
@@ -362,23 +474,23 @@ function defaultCharacter(overrides = {}) {
     resources: {
       hp:     { label:"HP",   current:20, max:20,  color:"#ff3b5f" },
       mp:     { label:"MP",   current:7,  max:7,   color:"#6ee7ff" },
-      energy: { label:"EN",   current:5,  max:5,   color:"#80ff72" },
       cash:   { label:"CASH", current:0,  max:999, color:"#d6ff6e" },
     },
     combat: defaultCombatState(),
     skills: SKILL_NAMES.map((name) => ({ id:uid("sk"), name, trained:false, master:false, extra:0 })),
     abilities: [{
       id: uid("ab"), name: "Ato de Determinacao", cost: "1 MP",
-      effects: "Recupera foco narrativo.", description: "Acao especial da ficha.", observations: "",
+      effects: "Recupera foco narrativo.", description: "Acao especial da ficha.", observations: "", imageUrl: "",
     }],
     inventory: [{
       id: uid("it"), name: "Caderno", description: "Anotacoes da sessao.",
-      qty: 1, weight: 0, observations: "",
+      qty: 1, weight: 0, observations: "", imageUrl: "",
     }],
     equipment: [
       { id:uid("eq"), slot:"Arma",    name:"Faca cega",       equipped:true, notes:"", armorType:"" },
       { id:uid("eq"), slot:"Armadura",name:"Casaco listrado",  equipped:true, notes:"", armorType:"" },
     ],
+    documents: [],
     customFields: [
       { id:uid("cf"), label:"Almas", value:"Nenhum" },
     ],
@@ -399,9 +511,10 @@ function normalizeCharacter(id, data) {
     resources:    { ...base.resources,   ...(data.resources   || {}) },
     combat:       normalizeCombatState(data.combat ?? base.combat),
     skills:       data.skills?.length ? mergeSkills(data.skills) : base.skills,
-    abilities:    data.abilities    ?? base.abilities,
-    inventory:    data.inventory    ?? base.inventory,
+    abilities:    normalizeAbilities(data.abilities ?? base.abilities),
+    inventory:    normalizeInventory(data.inventory ?? base.inventory),
     equipment:    normalizeEquipment(data.equipment ?? base.equipment),
+    documents:    normalizeDocuments(data.documents ?? base.documents),
     customFields: data.customFields ?? base.customFields,
   };
   merged.exp = Math.max(0, Number(data.exp ?? base.exp) || 0);
@@ -858,7 +971,7 @@ function renderCharacterCard(c) {
     enumField(
       "Sub-raca", resolveSubRaceKey(c.subRace ?? ""), SUB_RACE_KEYS, SUB_RACE_LABELS,
       (v) => updateChar(c, { subRace: v }),
-      { refresh: true, disabled: !canEdit(c), noMechanicalKeys: ["fantasma", "flor", "variados"] }
+      { refresh: true, disabled: !canEdit(c), noMechanicalKeys: ["fantasma", "flor", "variados", "boneco magico"] }
     ),
     field("Jogador", c.player,    (v) => updateChar(c, { player: v }),    { disabled: !isMaster() }),
     field("Frase",   c.flavor,    (v) => updateChar(c, { flavor: v }),    { textarea:true }),
@@ -914,14 +1027,13 @@ function renderGeneral(c) {
   const addFieldBtn = btn("+ Campo", "ghost-btn", () => addCustomField(c));
   if (!canE) addFieldBtn.setAttribute("data-master-only", "");
 
-  const customFields = c.customFields.map((f, i) => {
+  const customFields = c.customFields.map((f) => {
     const removeBtn = btn("×", "danger-btn small-btn", () => removeListItem(c, "customFields", f.id));
     if (!canE) removeBtn.setAttribute("data-master-only", "");
-    return rowCard([
-      field("Campo", f.label, (v) => updateArrayItem(c, "customFields", i, { label: v })),
-      field("Valor", f.value, (v) => updateArrayItem(c, "customFields", i, { value: v })),
-      removeBtn,
-    ]);
+    return collapsibleItemCard(c, "customFields", f.id, f.label, [
+      field("Campo", f.label, (v) => updateCustomField(c, f.id, { label: v })),
+      field("Valor", f.value, (v) => updateCustomField(c, f.id, { value: v })),
+    ], removeBtn);
   });
 
   const infoCard = card("Informacoes", [
@@ -937,8 +1049,83 @@ function renderGeneral(c) {
   return stack([
     sectionTitle("Geral", "Identidade e informacoes do personagem."),
     themeCard ? node("div", "grid two", [infoCard, themeCard]) : infoCard,
-    card("Campos extras", [...customFields, addFieldBtn]),
+    collapsibleCard(c, "customFields", "Campos extras", [...customFields, addFieldBtn], { count: c.customFields.length }),
+    renderDocuments(c),
   ].filter(Boolean));
+}
+
+function renderDocuments(c) {
+  const canE = canEdit(c);
+  const documents = c.documents || [];
+  const list = node("div", "list-grid", documents.map((item) => buildDocumentCard(c, item, canE)));
+  const addUrlBtn = btn("+ PDF por URL", "primary-btn", () => addDocumentUrl(c));
+  if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) addUrlBtn.disabled = true;
+
+  const uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "application/pdf";
+  uploadInput.hidden = true;
+  uploadInput.addEventListener("change", async () => {
+    const file = uploadInput.files?.[0];
+    uploadInput.value = "";
+    if (file) await uploadPdfDocument(c, file);
+  });
+
+  const uploadBtn = btn("Enviar PDF", "ghost-btn", () => uploadInput.click());
+  if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) uploadBtn.disabled = true;
+
+  const hint = node("p", "", `Limite: ${documents.length}/${MAX_PDFS_PER_CHARACTER} PDFs, ate 10 MB cada.`);
+  return collapsibleCard(c, "documents", "Documentos (PDF)", [
+    list,
+    node("div", "pdf-actions", [addUrlBtn, uploadBtn, uploadInput]),
+    hint,
+  ], { count: documents.length });
+}
+
+function buildDocumentCard(c, item, canE) {
+  const idxOf = () => (c.documents || []).findIndex((docItem) => docItem.id === item.id);
+  const updateDocItem = (patch) => {
+    const idx = idxOf();
+    if (idx !== -1) updateArrayItem(c, "documents", idx, patch);
+  };
+
+  const meta = item.storagePath
+    ? node("p", "pdf-meta", `${formatBytes(item.size)} · arquivo enviado`)
+    : node("p", "pdf-meta", "URL externa");
+
+  const uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "application/pdf";
+  uploadInput.hidden = true;
+  uploadInput.addEventListener("change", async () => {
+    const file = uploadInput.files?.[0];
+    uploadInput.value = "";
+    if (file) await uploadPdfDocument(c, file, item.id);
+  });
+
+  const openBtn = btn("Abrir PDF", "ghost-btn small-btn", () => openPdfPopup(item.url, item.name || "PDF"));
+  const tabBtn = btn("Nova aba", "ghost-btn small-btn", () => openPdfInNewTab(item.url));
+  if (!String(item.url || "").trim()) {
+    openBtn.disabled = true;
+    tabBtn.disabled = true;
+  }
+
+  const replaceBtn = btn(item.storagePath ? "Substituir PDF" : "Enviar arquivo", "ghost-btn small-btn", () => uploadInput.click());
+  if (!canE) replaceBtn.disabled = true;
+
+  const removeBtn = btn("Remover", "danger-btn small-btn", async () => removeDocument(c, item.id));
+  if (!canE) removeBtn.disabled = true;
+
+  const grid = node("div", "grid two", [
+    field("Nome", item.name, (v) => updateDocItem({ name: String(v || "").slice(0, 120) }), { disabled: !canE }),
+    field("URL", item.url, (v) => updateDocItem({ url: String(v || "").slice(0, 2048) }), { disabled: !canE || Boolean(item.storagePath) }),
+  ]);
+
+  return collapsibleItemCard(c, "documents", item.id, item.name || "PDF", [
+    grid,
+    meta,
+    node("div", "pdf-actions", [openBtn, tabBtn, replaceBtn, uploadInput]),
+  ], removeBtn);
 }
 
 function renderThemeEditor(c) {
@@ -956,6 +1143,12 @@ function renderThemeEditor(c) {
     ]),
     selectField("Tipo", t.type, ["linear","radial"], (v) => updateTheme(c, { type: v }), { refresh:true }),
     rangeField("Angulo", t.angle, 0, 360, (v) => updateTheme(c, { angle: v })),
+    enumField(
+      "Fonte", FONT_KEYS.includes(t.font) ? t.font : "padrao",
+      FONT_KEYS, FONT_LABELS,
+      (v) => updateTheme(c, { font: v }),
+      { refresh: true, disabled: !canEdit(c) }
+    ),
   ]);
 }
 
@@ -1048,10 +1241,12 @@ function renderSkills(c) {
 function renderAbilities(c) {
   return stack([
     sectionTitle("Habilidades", "Poderes e acoes especiais do personagem."),
-    buildStableListEditor(c, "abilities",
-      ["name","cost","effects","description","observations"],
-      () => addListItem(c, "abilities", { name:"", cost:"", effects:"", description:"", observations:"" })
-    ),
+    collapsibleCard(c, "abilities", "Habilidades", [
+      buildStableListEditor(c, "abilities",
+        ["name","cost","effects","description","observations"],
+        () => addListItem(c, "abilities", { name:"", cost:"", effects:"", description:"", observations:"", imageUrl:"" })
+      ),
+    ], { count: (c.abilities || []).length }),
   ]);
 }
 
@@ -1060,10 +1255,12 @@ function renderAbilities(c) {
 function renderInventory(c) {
   return stack([
     sectionTitle("Inventario", "Itens carregados pelo personagem."),
-    buildStableListEditor(c, "inventory",
-      ["name","description","qty","weight","observations"],
-      () => addListItem(c, "inventory", { name:"", description:"", qty:1, weight:0, observations:"" })
-    ),
+    collapsibleCard(c, "inventory", "Inventario", [
+      buildStableListEditor(c, "inventory",
+        ["name","description","qty","weight","observations"],
+        () => addListItem(c, "inventory", { name:"", description:"", qty:1, weight:0, observations:"", imageUrl:"" })
+      ),
+    ], { count: (c.inventory || []).length }),
   ]);
 }
 
@@ -1089,7 +1286,6 @@ function buildStableListEditor(c, key, fields, defaultItem) {
 }
 
 function buildItemCard(c, key, item, fields, canE) {
-  const card_ = node("section", "panel content-card list-item-card");
   const grid  = node("div", "grid two");
 
   fields.forEach((fname) => {
@@ -1123,8 +1319,28 @@ function buildItemCard(c, key, item, fields, canE) {
   });
   if (!canE) removeBtn.disabled = true;
 
-  card_.append(grid, removeBtn);
-  return card_;
+  const imageUrlField = field("Imagem (URL)", item.imageUrl || "", (v) => {
+    const idx = c[key].findIndex((i) => i.id === item.id);
+    if (idx !== -1) updateArrayItem(c, key, idx, { imageUrl: String(v || "") });
+  }, { refresh:true, disabled: !canE });
+
+  const thumb = (item.imageUrl || "").trim()
+    ? (() => {
+        const img = document.createElement("img");
+        img.src = item.imageUrl;
+        img.alt = item.name || "Imagem do item";
+        img.loading = "lazy";
+        img.addEventListener("error", () => img.remove());
+        const thumbBtn = btn("", "item-thumb-btn", () => openImagePopup(item.imageUrl, item.name || "Imagem"));
+        thumbBtn.setAttribute("type", "button");
+        thumbBtn.setAttribute("aria-label", "Abrir imagem");
+        thumbBtn.append(img);
+        const openBtn = btn("Abrir imagem", "ghost-btn small-btn", () => openImagePopup(item.imageUrl, item.name || "Imagem"));
+        return node("div", "item-image-preview", [thumbBtn, openBtn]);
+      })()
+    : null;
+
+  return collapsibleItemCard(c, key, item.id, item.name, [grid, imageUrlField, thumb], removeBtn);
 }
 
 // ─── Aba Equipamentos (Sprint 3) ───────────────────────────────────────────────
@@ -1144,7 +1360,9 @@ function renderEquipment(c) {
 
   return stack([
     sectionTitle("Equipamentos", "Itens equipados e tipo de armadura."),
-    node("div", "list-editor-wrapper", [list, addBtn]),
+    collapsibleCard(c, "equipment", "Equipamentos", [
+      node("div", "list-editor-wrapper", [list, addBtn]),
+    ], { count: items.length }),
   ]);
 }
 
@@ -1190,13 +1408,15 @@ function buildEquipmentCard(c, item, canE) {
   });
   if (!canE) removeBtn.disabled = true;
 
-  return node("section", "panel content-card list-item-card", [grid, removeBtn]);
+  const title = [item.slot, item.name]
+    .map((s) => String(s ?? "").trim()).filter(Boolean).join(" — ");
+  return collapsibleItemCard(c, "equipment", item.id, title, [grid], removeBtn);
 }
 
 // ─── Outras abas ───────────────────────────────────────────────────────────────
 
 function renderNotes(c) {
-  return card("Notas", [field("Notas", c.notes, (v) => updateChar(c, { notes: v }), { textarea:true })]);
+  return collapsibleCard(c, "notes", "Notas", [field("Notas", c.notes, (v) => updateChar(c, { notes: v }), { textarea:true })]);
 }
 
 function renderHistory(c) {
@@ -1206,6 +1426,7 @@ function renderHistory(c) {
 function renderResources(c) {
   const calc = excelCalc(c);
   const flow = combatFlow(c, calc);
+  const editableResources = Object.entries(c.resources || {}).filter(([k]) => k !== "energy");
   return stack([
     sectionTitle("Recursos", "Barras e valores atuais."),
     card("Barras", [resourceBars(c)]),
@@ -1213,7 +1434,7 @@ function renderResources(c) {
     renderCombatFlowCard(c, flow),
     card("Editar atuais", [
       node("div", "grid three",
-        Object.entries(c.resources).map(([k, r]) =>
+        editableResources.map(([k, r]) =>
           field(r.label, r.current, (v) => updateNested(c, ["resources",k,"current"], Number(v||0)), { type:"number", refresh:true })
         )
       ),
@@ -1409,6 +1630,15 @@ async function duplicateCharacter() {
   if (!canEdit(src)) { toast("Sem permissao"); return; }
   const { id, createdAt, updatedAt, ...copy } = src;
   sanitizeCharacterForPersist(copy);
+  // I1: limpar storagePath dos documentos copiados para que remover/substituir
+  // PDF na copia nunca apague o arquivo fisico da ficha original. A url e
+  // preservada para que o PDF continue acessivel como referencia somente leitura.
+  if (Array.isArray(copy.documents)) {
+    copy.documents = copy.documents.map((docItem) => ({
+      ...docItem,
+      storagePath: "",
+    }));
+  }
   const ref = await addDoc(collection(firestore, "characters"), {
     ...copy,
     ownerId:   isMaster() ? copy.ownerId   : state.user.uid,
@@ -1430,14 +1660,103 @@ async function deleteCharacter(c) {
 // ─── CRUD campos e listas ──────────────────────────────────────────────────────
 
 async function addCustomField(c) {
-  c.customFields.push({ id:uid("cf"), label:"Novo campo", value:"" });
+  if (!canEdit(c)) { toast("Sem permissao"); return; }
+  const id = uid("cf");
+  c.customFields.push({ id, label:"Novo campo", value:"" });
+  markItemExpanded(c, "customFields", id);
   await saveChar(c, "Campo adicionado");
+  render();
+}
+
+// Atualiza um campo extra localizando-o por id (robusto a reordenacao).
+function updateCustomField(c, id, patch) {
+  if (!canEdit(c)) return;
+  const idx = c.customFields.findIndex((f) => f.id === id);
+  if (idx !== -1) updateArrayItem(c, "customFields", idx, patch);
+}
+
+async function addDocumentUrl(c) {
+  if (!canEdit(c)) { toast("Sem permissao"); return; }
+  if ((c.documents || []).length >= MAX_PDFS_PER_CHARACTER) {
+    toast(`Limite de ${MAX_PDFS_PER_CHARACTER} PDFs`);
+    return;
+  }
+  const id = uid("doc");
+  c.documents = [...(c.documents || []), normalizeDocumentItem({ id, name:"Novo PDF", url:"" })];
+  markItemExpanded(c, "documents", id);
+  await saveChar(c, "PDF adicionado");
+  render();
+}
+
+async function uploadPdfDocument(c, file, existingId = null) {
+  if (!canEdit(c)) { toast("Sem permissao"); return; }
+  if (!c?.id || c.id === "new") { toast("Salve a ficha antes do upload"); return; }
+  if (!file) return;
+  const looksLikePdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  if (!looksLikePdf) { toast("Envie apenas PDF"); return; }
+  if (file.size > MAX_PDF_BYTES) { toast("PDF acima de 10 MB"); return; }
+  if (!existingId && (c.documents || []).length >= MAX_PDFS_PER_CHARACTER) {
+    toast(`Limite de ${MAX_PDFS_PER_CHARACTER} PDFs`);
+    return;
+  }
+
+  const id = existingId || uid("doc");
+  const docs = c.documents || [];
+  const idx = docs.findIndex((item) => item.id === id);
+  const previous = idx !== -1 ? docs[idx] : null;
+  const path = `characters/${c.id}/documents/${id}-${safeStorageFileName(file.name)}`;
+
+  try {
+    const ref = storageRef(storage, path);
+    await uploadBytes(ref, file, { contentType: "application/pdf" });
+    const url = await getDownloadURL(ref);
+    const patch = normalizeDocumentItem({
+      id,
+      name: previous?.name || file.name.replace(/\.pdf$/i, ""),
+      url,
+      storagePath: path,
+      size: file.size,
+      uploadedAt: new Date().toISOString(),
+    });
+
+    c.documents = idx !== -1
+      ? docs.map((item, i) => i === idx ? { ...item, ...patch } : item)
+      : [...docs, patch];
+
+    if (previous?.storagePath && previous.storagePath !== path) {
+      deleteObject(storageRef(storage, previous.storagePath)).catch((e) => console.warn("Old PDF cleanup failed:", e));
+    }
+
+    markItemExpanded(c, "documents", id);
+    await saveChar(c, "PDF enviado");
+    render();
+  } catch (e) {
+    console.warn("PDF upload failed:", e);
+    toast("Falha ao enviar PDF");
+  }
+}
+
+async function removeDocument(c, id) {
+  if (!canEdit(c)) { toast("Sem permissao"); return; }
+  const item = (c.documents || []).find((docItem) => docItem.id === id);
+  if (!item) return;
+  if (item.storagePath) {
+    try {
+      await deleteObject(storageRef(storage, item.storagePath));
+    } catch (e) {
+      console.warn("PDF storage deletion failed:", e);
+    }
+  }
+  c.documents = (c.documents || []).filter((docItem) => docItem.id !== id);
+  await saveChar(c, "PDF removido");
   render();
 }
 
 async function addListItem(c, key, defaults) {
   if (!canEdit(c)) { toast("Sem permissao"); return; }
-  c[key] = [...(c[key]||[]), { id:uid(key), ...defaults }];
+  const id = uid(key);
+  c[key] = [...(c[key]||[]), { id, ...defaults }];
+  markItemExpanded(c, key, id);
   await saveChar(c, key==="abilities" ? "Habilidade adicionada" : "Item adicionado");
   render();
 }
@@ -1454,7 +1773,7 @@ async function removeListItem(c, key, id) {
 function resourceBars(c) {
   const calc = excelCalc(c);
   return node("div", "bars",
-    ["hp","mp","energy","cash"].map((k) => {
+    ["hp","mp","cash"].map((k) => {
       const r   = c.resources[k] || { label:k.toUpperCase(), current:0, max:0, color:"#fff" };
       const max = k==="hp" ? calc.hpMax : k==="mp" ? calc.ppMax : r.max;
       const pct = max ? Math.max(0, Math.min(100, (r.current/max)*100)) : 0;
@@ -1659,6 +1978,8 @@ function applyTheme(c = selectedCharacter()) {
   el.body.style.setProperty("--char-gradient", gradient(t));
   el.body.style.setProperty("--char-secondary", t.colors?.[1] || "#6ee7ff");
   el.body.style.setProperty("--char-accent",    t.colors?.[0] || "#ff4fd8");
+  const fontKey = FONT_KEYS.includes(t.font) ? t.font : "padrao";
+  el.body.style.setProperty("--char-font", fontStackFor(fontKey));
 }
 
 function gradient(t = defaultTheme()) {
@@ -1761,6 +2082,112 @@ function btn(lbl, cls, onClick) {
   return b;
 }
 
+// Sprint Imagens: popup/lightbox simples para visualizar imagem ampliada.
+function openImagePopup(url, alt = "Imagem") {
+  const safeUrl = String(url || "").trim();
+  if (!safeUrl) return;
+
+  const overlay = node("div", "image-popup-overlay", [], { role:"dialog", "aria-modal":"true", "aria-label":"Visualizacao de imagem" });
+  const box = node("div", "image-popup-box");
+  const closeBtn = btn("Fechar", "ghost-btn small-btn", () => close());
+  closeBtn.setAttribute("type", "button");
+
+  const img = document.createElement("img");
+  img.src = safeUrl;
+  img.alt = String(alt || "Imagem");
+  img.loading = "eager";
+  img.addEventListener("error", () => {
+    box.replaceChildren(
+      node("p", "", "Nao foi possivel carregar a imagem."),
+      closeBtn
+    );
+    closeBtn.focus();
+  });
+
+  function close() {
+    document.removeEventListener("keydown", onKeyDown);
+    overlay.remove();
+  }
+  function onKeyDown(ev) {
+    if (ev.key === "Escape") close();
+  }
+
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+  document.addEventListener("keydown", onKeyDown);
+
+  box.append(img, closeBtn);
+  overlay.append(box);
+  document.body.append(overlay);
+  closeBtn.focus();
+}
+
+function openPdfPopup(url, name = "PDF") {
+  const safeUrl = String(url || "").trim();
+  if (!safeUrl) return;
+
+  const overlay = node("div", "pdf-popup-overlay", [], { role:"dialog", "aria-modal":"true", "aria-label":"Visualizacao de PDF" });
+  const box = node("div", "pdf-popup-box");
+  const title = node("strong", "pdf-popup-title", String(name || "PDF"));
+  const closeBtn = btn("Fechar", "ghost-btn small-btn", () => close());
+  closeBtn.setAttribute("type", "button");
+  const newTabBtn = btn("Abrir em nova aba", "ghost-btn small-btn", () => openPdfInNewTab(safeUrl));
+  newTabBtn.setAttribute("type", "button");
+
+  const frame = document.createElement("iframe");
+  frame.src = safeUrl;
+  frame.title = String(name || "PDF");
+  frame.loading = "eager";
+  frame.addEventListener("error", () => {
+    box.replaceChildren(
+      title,
+      node("p", "", "Nao foi possivel carregar o PDF no popup."),
+      node("div", "pdf-actions", [newTabBtn, closeBtn])
+    );
+    closeBtn.focus();
+  });
+
+  function close() {
+    document.removeEventListener("keydown", onKeyDown);
+    overlay.remove();
+  }
+  function onKeyDown(ev) {
+    if (ev.key === "Escape") close();
+  }
+
+  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+  document.addEventListener("keydown", onKeyDown);
+
+  box.append(title, frame, node("div", "pdf-actions", [newTabBtn, closeBtn]));
+  overlay.append(box);
+  document.body.append(overlay);
+  closeBtn.focus();
+}
+
+function openPdfInNewTab(url) {
+  const safeUrl = String(url || "").trim();
+  if (!safeUrl) return;
+  const win = window.open(safeUrl, "_blank", "noopener");
+  if (win) win.opener = null;
+}
+
+function safeStorageFileName(name) {
+  const cleaned = String(name || "documento.pdf")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 80);
+  return cleaned.toLowerCase().endsWith(".pdf") ? cleaned : `${cleaned || "documento"}.pdf`;
+}
+
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 function sectionTitle(title, subtitle) {
   return node("header", "section-title", [label_(title.toUpperCase()), node("p","",subtitle)]);
 }
@@ -1769,6 +2196,62 @@ function card(title, children) {
   return node("section", "panel content-card",
     [title ? node("h3","",title) : null, ...children].filter(Boolean)
   );
+}
+
+// ─── Secoes colapsaveis (Sprint UX-1) ──────────────────────────────────────────
+function sectionStateKey(c, key) { return `${c?.id || "?"}:${key}`; }
+function isSectionCollapsed(c, key) { return Boolean(collapsedSections[sectionStateKey(c, key)]); }
+function toggleSection(c, key) {
+  const k = sectionStateKey(c, key);
+  collapsedSections[k] = !collapsedSections[k];
+  render();
+}
+
+// Card com cabecalho clicavel que minimiza/expande o corpo. Reusa o estilo de
+// content-card; o estado vive em collapsedSections (sessao), reaplicado a cada render.
+function collapsibleCard(c, key, title, children, opts = {}) {
+  const collapsed = isSectionCollapsed(c, key);
+  const countTxt  = (opts.count != null) ? ` (${opts.count})` : "";
+  const header = node("button", "card-collapse-header", [
+    node("h3", "", `${title}${countTxt}`),
+    node("span", "collapse-chevron", collapsed ? "▸" : "▾"),
+  ], { type: "button", "aria-expanded": String(!collapsed) });
+  header.addEventListener("click", () => toggleSection(c, key));
+
+  const body = collapsed ? null : node("div", "card-collapse-body", children);
+  return node("section", "panel content-card collapsible-card", [header, body].filter(Boolean));
+}
+
+// ─── Cards colapsaveis por item (Sprint UX-1) ──────────────────────────────────
+// Estado por item em expandedItems (sessao). Default recolhido; item novo expandido.
+function itemStateKey(c, category, id) { return `${c?.id || "?"}:${category}:${id}`; }
+function isItemExpanded(c, category, id) { return expandedItems.has(itemStateKey(c, category, id)); }
+function markItemExpanded(c, category, id) { expandedItems.add(itemStateKey(c, category, id)); }
+function toggleItem(c, category, id) {
+  const k = itemStateKey(c, category, id);
+  if (expandedItems.has(k)) expandedItems.delete(k); else expandedItems.add(k);
+  render();
+}
+
+// Card de item com cabecalho compacto (nome + chevron + remover). O cabecalho usa
+// uma div (nao um button) para nao aninhar o botao "remover". Reusa o estilo de
+// content-card; recolhido mostra so o cabecalho. Estado vive em expandedItems.
+function collapsibleItemCard(c, category, id, titleText, body, removeBtn) {
+  const expanded = isItemExpanded(c, category, id);
+  const title = String(titleText ?? "").trim() || "(sem nome)";
+  const toggle = node("button", "item-collapse-toggle", [
+    node("span", "collapse-chevron", expanded ? "▾" : "▸"),
+    node("span", "item-card-title", title),
+  ], { type: "button", "aria-expanded": String(expanded) });
+  toggle.addEventListener("click", () => toggleItem(c, category, id));
+
+  const header = node("div", "card-collapse-header item-collapse-header",
+    [toggle, removeBtn].filter(Boolean));
+  const bodyNode = expanded
+    ? node("div", "card-collapse-body", Array.isArray(body) ? body : [body])
+    : null;
+  return node("section", "panel content-card collapsible-card list-item-card",
+    [header, bodyNode].filter(Boolean));
 }
 
 function rowCard(children) {

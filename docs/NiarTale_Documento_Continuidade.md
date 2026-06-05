@@ -1,7 +1,7 @@
 # NiarTale - Documento de Continuidade
 
 **Data de leitura:** 2026-06-02  
-**Ultima atualizacao:** 2026-06-03 (Sprint 4 de reducao de dano)  
+**Ultima atualizacao:** 2026-06-04 (Sprint UX-1: secoes colapsaveis e revisao de campos extras)  
 **Fonte analisada:** `NiarTale.zip` / `NiarTale/niartale-output`  
 **Planilha analisada:** `docs/Planilha Original.xlsx`  
 **Escopo desta atualizacao:** documentacao alinhada a `app.js` apos Sprint 4 (exposicao de `buffs.physicalReduction` / `buffs.magicReduction` como `RD FIS` / `RD MAG`), mantendo o escopo das Sprints 1, 2 e 3.
@@ -73,9 +73,10 @@ niartale-output/
 | `index.html` | Shell estatica da aplicacao: sidebar, topbar, containers das views, canvas e toast. |
 | `app.js` | Toda a logica de estado, autenticacao, renderizacao, CRUD, permissoes de UI, calculos da ficha e eventos. |
 | `styles.css` | Layout, tema visual, responsividade, componentes, HUD, tabs, listas e regras visuais de permissao. |
-| `firebase.js` | Bootstrap Firebase, Auth, Firestore, persistencia local e reexport das funcoes usadas em `app.js`. |
+| `firebase.js` | Bootstrap Firebase, Auth, Firestore, Storage, persistencia local e reexport das funcoes usadas em `app.js`. |
 | `firestore.rules` | Regras de seguranca para `users`, `campaigns`, `characters` e `diceLog`. |
-| `firebase.json` | Configuracao de Firestore rules e Hosting estatico com rewrite SPA. |
+| `storage.rules` | Regras de seguranca para PDFs anexados em Firebase Storage. |
+| `firebase.json` | Configuracao de Firestore/Storage rules e Hosting estatico com rewrite SPA. |
 | `.firebaserc` | Projeto Firebase padrao: `niartale-rpg-core`. |
 | `DEPLOY.md` | Passos operacionais de deploy e promocao manual de Mestre. |
 | `docs/Planilha Original.xlsx` | Fonte canonica das regras mecanicas da ficha. |
@@ -154,6 +155,10 @@ O DOM e renderizado por funcoes utilitarias em `app.js`, como:
 - `sectionTitle(...)`
 
 Nao ha framework reativo. A estrategia e recriar trechos da UI conforme a view/aba ativa. Para evitar perda de foco durante digitacao, `renderIfSafe()` adia renders quando o elemento ativo e `INPUT`, `TEXTAREA` ou `SELECT`.
+
+**Secoes colapsaveis (Sprint UX-1):** `collapsibleCard()` cria cards com cabecalho clicavel para minimizar/expandir. O estado vive em `collapsedSections` (objeto de modulo, chave `${characterId}:${secao}`), **efemero por sessao**: nao persiste no Firestore e nao altera o modelo da ficha. E reaplicado a cada render. Aplicado em Habilidades, Inventario, Equipamentos, Campos extras e Notas. Padrao inicial: expandido.
+
+**Cards colapsaveis por item (Sprint UX-1 — cards individuais):** `collapsibleItemCard()` torna cada item (habilidade, item de inventario, equipamento e campo extra) um card colapsavel com cabecalho compacto (nome + chevron + botao remover). O nome vem de `name` (habilidades/inventario), `slot — name` (equipamentos) ou `label` (campos extras); a renomeacao ocorre no corpo expandido e reflete no cabecalho no proximo render. O estado por item vive em `expandedItems` (Set de modulo, chave `${characterId}:${categoria}:${itemId}`), **efemero por sessao**. Padrao inicial: **recolhido**; item recem-criado inicia **expandido** (via `markItemExpanded`). Colapsar e apenas visual: nao altera dados nem calculos (equipamento recolhido continua contando em `armorState`/`excelCalc`).
 
 ### 2.6 Persistencia e Edicao
 
@@ -261,7 +266,7 @@ Essa duplicacao e correta e deve ser mantida. Nao confiar somente no frontend.
 
 ### 4.4 Abas da Ficha
 
-- Geral: dados basicos, tema, avatar e campos customizados.
+- Geral: dados basicos, tema, avatar, campos customizados e documentos PDF anexados.
 - Atributos: atributos brutos, buffs e derivados calculados.
 - Pericias: 26 pericias com Treinado, Mestre e Extra.
 - Habilidades: lista editavel de habilidades com custo, efeitos, descricao e observacoes.
@@ -269,7 +274,7 @@ Essa duplicacao e correta e deve ser mantida. Nao confiar somente no frontend.
 - Equipamentos: lista editavel de equipamentos com slot, nome, tipo de armadura explicito (Leve/Media/Pesada), toggle equipado e notas.
 - Notas: texto livre.
 - Historia: texto livre.
-- Recursos: HP, MP/PP, EN e CASH.
+- Recursos: HP, MP/PP e CASH. (EN deprecado na UI; legado preservado em dados antigos)
 
 ### 4.5 Calculos
 
@@ -356,7 +361,7 @@ Fluxos principais:
 - **Edicao/save:** `sanitizeCharacterForPersist()` antes de `saveChar`; `updateChar` valida chaves e reclampa HP/MP.
 - **Migracao:** `migrateRaceSubRaceOnce()` apos login; flag `users/{uid}.raceSubRaceMigratedAt`.
 
-Sub-racas **Fantasma**, **Flor** e **Variados** existem no select (planilha G8) mas sem entrada em `SUB_RACE_SR` (bonus zero).
+Sub-racas **Fantasma**, **Flor** e **Variados** existem no select (planilha G8) mas sem entrada em `SUB_RACE_SR` (bonus zero). **Boneco Magico** (chave `"boneco magico"`) segue o mesmo padrao: e uma adicao do sistema (nao existe na planilha) e tem impacto mecanico nulo — `SUB_RACE_KEYS`/`SUB_RACE_LABELS` apenas, sem entrada em `SUB_RACE_SR`.
 
 ### 5.6 UI Otimizada Para Digitacao
 
@@ -447,6 +452,16 @@ Para personagens:
 - pode falhar se outra aba ja possui persistencia;
 - app continua funcionando online.
 
+### 6.4.1 Storage (PDFs)
+
+`firebase.js` tambem inicializa `getStorage(app)` e reexporta `storageRef`, `uploadBytes`, `getDownloadURL` e `deleteObject` para anexos PDF. Arquivos enviados ficam em:
+
+```text
+characters/{characterId}/documents/{docId}-{filename}.pdf
+```
+
+Metadados ficam em `characters/{characterId}.documents[]` no Firestore. `storage.rules` limita acesso ao dono da ficha ou Mestre e aceita apenas PDF ate 10 MB.
+
 ### 6.5 Deploy
 
 `DEPLOY.md` indica:
@@ -454,8 +469,9 @@ Para personagens:
 1. conferir config em `firebase.js`;
 2. habilitar Authentication por Email/Senha;
 3. criar Cloud Firestore;
-4. rodar `firebase deploy`;
-5. promover Mestre manualmente no Firestore Console alterando `users/{uid}.role` para `master`.
+4. habilitar Firebase Storage (necessario para upload de PDFs);
+5. rodar `firebase deploy`;
+6. promover Mestre manualmente no Firestore Console alterando `users/{uid}.role` para `master`.
 
 ---
 
@@ -617,12 +633,13 @@ Esses campos sao considerados em `excelCalc()` **e agora possuem controles diret
 {
   hp: { label: "HP", current, max, color },
   mp: { label: "MP", current, max, color },
-  energy: { label: "EN", current, max, color },
   cash: { label: "CASH", current, max, color }
 }
 ```
 
 Observacao: para HP e MP/PP, o maximo exibido nas barras vem de `excelCalc()` (`hpMax` e `ppMax`), nao necessariamente de `resources.hp.max` ou `resources.mp.max`.
+
+Atualizacao (2026-06-05): **EN/Energia deprecado na UI** por nao ter equivalente na planilha e nao participar de calculos. A UI de Recursos exibe/edita HP, MP e CASH. Fichas legadas com `resources.energy` continuam compativeis (sem migracao eager); o campo apenas nao e mais exibido/editado.
 
 ### 7.7.1 Fluxo de combate (Sprint 1)
 
@@ -762,6 +779,23 @@ Impacto em calculos:
 ```
 
 **Atualizado (Sprint 3):** o equipamento agora tem aba propria (`renderEquipment`) e campo explicito `armorType`. `armorState()` resolve o tipo por item com prioridade para `armorType`; quando vazio, faz **fallback** para a inferencia por nome/slot (compatibilidade com fichas antigas). A agregacao continua somavel entre itens equipados, preservando `R21/R23/R25` da planilha. `excelCalc()` **nao foi alterado**: os coeficientes de C.A. (+2/-3/-6), Esquiva (-3/-6) e R.D. Fisica (+5/+10/+20) seguem em `excelCalc` via `armorState`. Normalizacao por `normalizeEquipment()` em `normalizeCharacter()` e `sanitizeCharacterForPersist()`.
+
+### 7.9.1 Documentos PDF anexados
+
+`documents`:
+
+```js
+{
+  id,
+  name,
+  url,
+  storagePath,
+  size,
+  uploadedAt
+}
+```
+
+Atualizado (Sprint PDF): a aba Geral possui um card "Documentos (PDF)" com ate 10 anexos por ficha. O usuario pode adicionar PDF por URL externa ou enviar arquivo local para Firebase Storage. PDFs enviados sao armazenados em `characters/{characterId}/documents/...`; a ficha salva somente metadados e URL de download em `documents[]`. Abertura ocorre em popup com `iframe` e fallback "Abrir em nova aba". Fichas antigas sem `documents` normalizam para `[]` (lazy, sem migracao eager). O recurso nao altera `excelCalc` nem qualquer formula.
 
 ### 7.10 Campos Customizados
 
