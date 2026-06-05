@@ -588,38 +588,133 @@ input[type="number"] { font-variant-numeric: tabular-nums; }
   font-size: 0.72rem;
 }
 
-.pdf-popup-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 9999;
-  display: grid;
-  place-items: center;
-  padding: var(--sp-lg);
-  background: rgba(0, 0, 0, 0.78);
+.pdf-source-row {
+  margin-bottom: var(--sp-xs, 4px);
 }
 
-.pdf-popup-box {
-  display: grid;
-  gap: var(--sp-sm);
-  width: min(94vw, 980px);
-  height: min(92vh, 760px);
-  padding: var(--sp-sm);
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-}
-
-.pdf-popup-title {
-  color: var(--paper);
+.pdf-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
   font-family: var(--pixel);
-  font-size: 0.78rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.pdf-popup-box iframe {
-  width: 100%;
-  min-height: 0;
-  height: 100%;
+.pdf-badge--local {
+  background: rgba(110, 231, 255, 0.15);
+  color: var(--char-secondary);
+  border: 1px solid rgba(110, 231, 255, 0.35);
+}
+
+.pdf-badge--url {
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--muted);
   border: 1px solid var(--thin-line);
+}
+
+/* Janela flutuante de PDF (mover / redimensionar / min / max) */
+.pdf-win {
+  position: fixed;
+  z-index: 9998;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-width: 320px;
+  min-height: 180px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.65);
+  resize: both;
+  overflow: hidden;
+}
+
+.pdf-win--max {
+  resize: none !important;
+}
+
+.pdf-win--min {
+  resize: none !important;
+  grid-template-rows: auto 0 0;
+}
+
+.pdf-win--min .pdf-win-body,
+.pdf-win--min .pdf-win-footer {
+  display: none;
+}
+
+.pdf-win-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: rgba(0, 0, 0, 0.40);
+  cursor: grab;
+  user-select: none;
+  border-bottom: 1px solid var(--thin-line);
+}
+
+.pdf-win-titlebar:active {
+  cursor: grabbing;
+}
+
+.pdf-win-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--pixel);
+  font-size: 0.72rem;
+  color: var(--paper);
+}
+
+.pdf-win-btn {
+  padding: 1px 7px;
+  font-size: 0.72rem;
+  line-height: 1.6;
+  background: transparent;
+  border: 1px solid var(--thin-line);
+  color: var(--text);
+  cursor: pointer;
+  flex-shrink: 0;
+  font-family: var(--pixel);
+}
+
+.pdf-win-btn:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+
+.pdf-win-close:hover {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+
+.pdf-win-body {
+  overflow: hidden;
+  display: grid;
+}
+
+.pdf-win-body iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
   background: #fff;
+  display: block;
+}
+
+.pdf-win-footer {
+  padding: 4px 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid var(--thin-line);
+}
+
+.pdf-win-msg {
+  padding: var(--sp-md);
+  color: var(--muted);
+  font-size: 0.82rem;
+  align-self: center;
+  justify-self: center;
 }
 
 /* Ícone de alma menor: era 106px × 3.4rem */

@@ -38,6 +38,73 @@ const SHEET_TABS = [
 ];
 const COMBAT_FLOW_SLOTS = 5;
 const MAX_PDFS_PER_CHARACTER = 10;
+const MAX_PDF_LOCAL_BYTES = 25 * 1024 * 1024; // 25 MB por arquivo local
+
+// ─── IndexedDB: armazenamento local de binários PDF ────────────────────────
+// Banco separado do IndexedDB interno do Firestore (enableIndexedDbPersistence).
+const MEDIA_DB_NAME = "niartale-media";
+const MEDIA_DB_VERSION = 1;
+const PDF_WIN_KEY = "niartale.pdfWindow";
+let _mediaDb = null;
+
+function openMediaDb() {
+  if (_mediaDb) return Promise.resolve(_mediaDb);
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(MEDIA_DB_NAME, MEDIA_DB_VERSION);
+    req.onupgradeneeded = (ev) => {
+      const db = ev.target.result;
+      if (!db.objectStoreNames.contains("pdfs")) {
+        const store = db.createObjectStore("pdfs", { keyPath: "localId" });
+        store.createIndex("characterId", "characterId", { unique: false });
+      }
+    };
+    req.onsuccess = (ev) => { _mediaDb = ev.target.result; resolve(_mediaDb); };
+    req.onerror = (ev) => reject(ev.target.error);
+  });
+}
+
+async function putPdfBlob(record) {
+  const db = await openMediaDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction("pdfs", "readwrite");
+    const req = tx.objectStore("pdfs").put(record);
+    req.onsuccess = resolve;
+    tx.onerror = (ev) => reject(ev.target.error);
+  });
+}
+
+async function getPdfBlob(localId) {
+  if (!localId) return null;
+  try {
+    const db = await openMediaDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction("pdfs", "readonly");
+      const req = tx.objectStore("pdfs").get(localId);
+      req.onsuccess = (ev) => resolve(ev.target.result ?? null);
+      req.onerror = (ev) => reject(ev.target.error);
+    });
+  } catch (e) {
+    console.warn("getPdfBlob failed:", e);
+    return null;
+  }
+}
+
+async function deletePdfBlob(localId) {
+  if (!localId) return;
+  try {
+    const db = await openMediaDb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("pdfs", "readwrite");
+      const req = tx.objectStore("pdfs").delete(localId);
+      req.onsuccess = resolve;
+      tx.onerror = (ev) => reject(ev.target.error);
+    });
+  } catch (e) {
+    console.warn("deletePdfBlob failed:", e);
+  }
+}
+// ───────────────────────────────────────────────────────────────────────────
+
 // Tipos de armadura explicitos (Sprint 3). "" = nenhum tipo definido.
 const ARMOR_TYPE_KEYS = ["", "leve", "media", "pesada"];
 const ARMOR_TYPE_LABELS = { "":"Nenhuma", leve:"Leve", media:"Media", pesada:"Pesada" };
@@ -439,14 +506,18 @@ function normalizeInventory(inventory) {
 
 function normalizeDocumentItem(item) {
   const src = item && typeof item === "object" ? item : {};
-  // Preserva chaves legadas (storagePath/size/uploadedAt) sem propaga-las
-  // em fichas novas. Nenhuma logica depende dessas chaves apos a migracao
-  // para PDF por URL.
+  // Infere source pelo conteudo para compatibilidade com itens sem o campo.
+  const hasLocal = Boolean(src.localId);
+  const source = src.source || (hasLocal ? "local" : "url");
   return {
-    ...src,
-    id: src.id || uid("doc"),
-    name: String(src.name ?? ""),
-    url: String(src.url ?? ""),
+    ...src,                   // preserva campos legados (storagePath/uploadedAt)
+    id:      src.id || uid("doc"),
+    name:    String(src.name ?? ""),
+    source,                   // "local" | "url"
+    url:     String(src.url ?? ""),
+    localId: String(src.localId ?? ""),
+    size:    Math.max(0, Number(src.size || 0)),
+    mime:    String(src.mime || (source === "local" ? "application/pdf" : "")),
   };
 }
 
@@ -1057,13 +1128,26 @@ function renderDocuments(c) {
   const canE = canEdit(c);
   const documents = c.documents || [];
   const list = node("div", "list-grid", documents.map((item) => buildDocumentCard(c, item, canE)));
+
   const addUrlBtn = btn("+ PDF por URL", "primary-btn", () => addDocumentUrl(c));
   if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) addUrlBtn.disabled = true;
+
+  const uploadInput = document.createElement("input");
+  uploadInput.type = "file";
+  uploadInput.accept = "application/pdf";
+  uploadInput.hidden = true;
+  uploadInput.addEventListener("change", async () => {
+    const file = uploadInput.files?.[0];
+    uploadInput.value = "";
+    if (file) await addDocumentLocal(c, file);
+  });
+  const uploadBtn = btn("Enviar PDF (local)", "ghost-btn", () => uploadInput.click());
+  if (!canE || documents.length >= MAX_PDFS_PER_CHARACTER) uploadBtn.disabled = true;
 
   const hint = node("p", "", `Limite: ${documents.length}/${MAX_PDFS_PER_CHARACTER} PDFs.`);
   return collapsibleCard(c, "documents", "Documentos (PDF)", [
     list,
-    node("div", "pdf-actions", [addUrlBtn]),
+    node("div", "pdf-actions", [addUrlBtn, uploadBtn, uploadInput]),
     hint,
   ], { count: documents.length });
 }
@@ -1075,23 +1159,49 @@ function buildDocumentCard(c, item, canE) {
     if (idx !== -1) updateArrayItem(c, "documents", idx, patch);
   };
 
-  const hasUrl = Boolean(String(item.url || "").trim());
-  const openBtn = btn("Abrir PDF", "ghost-btn small-btn", () => openPdfPopup(item.url, item.name || "PDF"));
-  const tabBtn = btn("Nova aba", "ghost-btn small-btn", () => openPdfInNewTab(item.url));
-  if (!hasUrl) { openBtn.disabled = true; tabBtn.disabled = true; }
+  const isLocal = item.source === "local" && Boolean(item.localId);
+  const hasUrl  = Boolean(String(item.url || "").trim());
+  const canOpen = isLocal || hasUrl;
+
+  const openBtn = btn("Abrir PDF", "ghost-btn small-btn", async () => openDocument(item));
+  const tabBtn  = btn("Nova aba",  "ghost-btn small-btn", async () => openDocumentInNewTab(item));
+  if (!canOpen) { openBtn.disabled = true; tabBtn.disabled = true; }
 
   const removeBtn = btn("Remover", "danger-btn small-btn", async () => removeDocument(c, item.id));
   if (!canE) removeBtn.disabled = true;
 
-  const grid = node("div", "grid two", [
-    field("Nome", item.name, (v) => updateDocItem({ name: String(v || "").slice(0, 120) }), { disabled: !canE }),
-    field("URL", item.url, (v) => updateDocItem({ url: String(v || "").slice(0, 2048) }), { refresh: true, disabled: !canE }),
-  ]);
+  const sourceBadge = node("span", `pdf-badge pdf-badge--${isLocal ? "local" : "url"}`,
+    isLocal ? "Local" : "URL");
+
+  // Linha de meta: tamanho (local) ou URL editável (externo)
+  const metaRow = isLocal
+    ? node("p", "pdf-meta", `${formatBytes(item.size)} · salvo neste navegador`)
+    : node("div", "grid two", [
+        field("Nome", item.name, (v) => updateDocItem({ name: String(v || "").slice(0, 120) }), { disabled: !canE }),
+        field("URL", item.url, (v) => updateDocItem({ url: String(v || "").slice(0, 2048) }), { refresh: true, disabled: !canE }),
+      ]);
+
+  const nameRow = isLocal
+    ? node("div", "grid two", [
+        field("Nome", item.name, (v) => updateDocItem({ name: String(v || "").slice(0, 120) }), { disabled: !canE }),
+        metaRow,
+      ])
+    : metaRow;
 
   return collapsibleItemCard(c, "documents", item.id, item.name || "PDF", [
-    grid,
+    node("div", "pdf-source-row", [sourceBadge]),
+    nameRow,
     node("div", "pdf-actions", [openBtn, tabBtn]),
   ], removeBtn);
+}
+
+// Formata bytes em unidade legivel (usado nos cards de PDF local).
+function formatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function renderThemeEditor(c) {
@@ -1604,7 +1714,33 @@ async function duplicateCharacter() {
     name: `${copy.name} (copia)`,
     createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
   });
-  selectedCharacterId = ref.id;
+  const newCharId = ref.id;
+
+  // Clonar blobs locais para isolar a copia da ficha original.
+  // Cada documento "local" recebe um novo localId proprio no IndexedDB,
+  // evitando referencia destrutiva compartilhada (nenhum deletePdfBlob
+  // de uma ficha afeta a outra).
+  const localDocs = (copy.documents || []).filter((d) => d.source === "local" && d.localId);
+  if (localDocs.length > 0) {
+    const clonedDocuments = await Promise.all(
+      (copy.documents || []).map(async (docItem) => {
+        if (docItem.source !== "local" || !docItem.localId) return docItem;
+        try {
+          const rec = await getPdfBlob(docItem.localId);
+          if (!rec) return { ...docItem, localId: "" };
+          const newLocalId = uid("pdf");
+          await putPdfBlob({ ...rec, localId: newLocalId, characterId: newCharId });
+          return { ...docItem, localId: newLocalId };
+        } catch (e) {
+          console.warn("PDF clone failed:", e);
+          return { ...docItem, localId: "" };
+        }
+      })
+    );
+    await updateDoc(doc(firestore, "characters", newCharId), { documents: clonedDocuments });
+  }
+
+  selectedCharacterId = newCharId;
   toast("Ficha duplicada");
 }
 
@@ -1639,15 +1775,55 @@ async function addDocumentUrl(c) {
     return;
   }
   const id = uid("doc");
-  c.documents = [...(c.documents || []), normalizeDocumentItem({ id, name:"Novo PDF", url:"" })];
+  c.documents = [...(c.documents || []), normalizeDocumentItem({ id, name: "Novo PDF", url: "", source: "url" })];
   markItemExpanded(c, "documents", id);
   await saveChar(c, "PDF adicionado");
   render();
 }
 
+async function addDocumentLocal(c, file) {
+  if (!canEdit(c)) { toast("Sem permissao"); return; }
+  if (!c?.id || c.id === "new") { toast("Salve a ficha antes do upload"); return; }
+  if (!file) return;
+  const looksLikePdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+  if (!looksLikePdf) { toast("Envie apenas PDF"); return; }
+  if (file.size > MAX_PDF_LOCAL_BYTES) { toast("PDF acima de 25 MB"); return; }
+  if ((c.documents || []).length >= MAX_PDFS_PER_CHARACTER) {
+    toast(`Limite de ${MAX_PDFS_PER_CHARACTER} PDFs`);
+    return;
+  }
+  const id = uid("doc");
+  const localId = uid("pdf");
+  try {
+    await putPdfBlob({
+      localId,
+      characterId: c.id,
+      blob: file,
+      name: file.name,
+      size: file.size,
+      mime: "application/pdf",
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.warn("PDF blob store failed:", e);
+    toast("Falha ao salvar PDF local");
+    return;
+  }
+  const docName = file.name.replace(/\.pdf$/i, "");
+  c.documents = [...(c.documents || []), normalizeDocumentItem({
+    id, name: docName, source: "local", localId, size: file.size, mime: "application/pdf",
+  })];
+  markItemExpanded(c, "documents", id);
+  await saveChar(c, "PDF enviado");
+  render();
+}
 
 async function removeDocument(c, id) {
   if (!canEdit(c)) { toast("Sem permissao"); return; }
+  const item = (c.documents || []).find((d) => d.id === id);
+  if (item?.source === "local" && item.localId) {
+    deletePdfBlob(item.localId); // best-effort, nao bloqueia o fluxo
+  }
   c.documents = (c.documents || []).filter((docItem) => docItem.id !== id);
   await saveChar(c, "PDF removido");
   render();
@@ -2022,46 +2198,195 @@ function openImagePopup(url, alt = "Imagem") {
   closeBtn.focus();
 }
 
-function openPdfPopup(url, name = "PDF") {
+// ─── Janela flutuante de PDF ─────────────────────────────────────────────────
+// Suporta: mover (arrastar barra de titulo), redimensionar (resize:both CSS),
+// minimizar, maximizar e fechar. Estado persiste em localStorage.
+
+function loadPdfWinState() {
+  try { return JSON.parse(localStorage.getItem(PDF_WIN_KEY)) || {}; }
+  catch (_) { return {}; }
+}
+
+function savePdfWinState(s) {
+  try { localStorage.setItem(PDF_WIN_KEY, JSON.stringify(s)); } catch (_) {}
+}
+
+// Abre a janela flutuante com qualquer URL (externa ou object URL local).
+// isObjectUrl=true indica que a URL deve ser revogada ao fechar.
+function openPdfWindow(url, name = "PDF", isObjectUrl = false) {
   const safeUrl = String(url || "").trim();
   if (!safeUrl) return;
 
-  const overlay = node("div", "pdf-popup-overlay", [], { role:"dialog", "aria-modal":"true", "aria-label":"Visualizacao de PDF" });
-  const box = node("div", "pdf-popup-box");
-  const title = node("strong", "pdf-popup-title", String(name || "PDF"));
-  const closeBtn = btn("Fechar", "ghost-btn small-btn", () => close());
-  closeBtn.setAttribute("type", "button");
-  const newTabBtn = btn("Abrir em nova aba", "ghost-btn small-btn", () => openPdfInNewTab(safeUrl));
+  // Apenas uma janela de PDF por vez
+  document.querySelector(".pdf-win")?.remove();
+
+  const saved = loadPdfWinState();
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const defW = Math.min(860, Math.round(vw * 0.88));
+  const defH = Math.min(680, Math.round(vh * 0.86));
+
+  let winX = saved.x ?? Math.round((vw - defW) / 2);
+  let winY = saved.y ?? Math.round((vh - defH) / 2);
+  let winW = saved.w ?? defW;
+  let winH = saved.h ?? defH;
+  let isMaximized = saved.maximized ?? false;
+  let isMinimized = false;
+
+  const win = node("div", "pdf-win", [], {
+    role: "dialog", "aria-label": `PDF: ${name}`,
+  });
+
+  // Barra de titulo (arrastavel)
+  const titleLabel = node("span", "pdf-win-title", String(name));
+  const minBtn  = btn("_", "pdf-win-btn", () => toggleMinimize());
+  const maxBtn  = btn("□", "pdf-win-btn", () => toggleMaximize());
+  const closeWinBtn = btn("✕", "pdf-win-btn pdf-win-close", () => close());
+  [minBtn, maxBtn, closeWinBtn].forEach((b) => b.setAttribute("type", "button"));
+  const titleBar = node("div", "pdf-win-titlebar", [titleLabel, minBtn, maxBtn, closeWinBtn]);
+
+  // Corpo com iframe
+  const newTabBtn = btn("Nova aba", "ghost-btn small-btn", () => openPdfInNewTab(safeUrl));
   newTabBtn.setAttribute("type", "button");
 
   const frame = document.createElement("iframe");
   frame.src = safeUrl;
-  frame.title = String(name || "PDF");
+  frame.title = String(name);
   frame.loading = "eager";
+  frame.setAttribute("allowfullscreen", "");
+
+  const winBody = node("div", "pdf-win-body", [frame]);
+  const winFooter = node("div", "pdf-win-footer pdf-actions", [newTabBtn]);
+
   frame.addEventListener("error", () => {
-    box.replaceChildren(
-      title,
-      node("p", "", "Nao foi possivel carregar o PDF no popup."),
-      node("div", "pdf-actions", [newTabBtn, closeBtn])
+    winBody.replaceChildren(
+      node("p", "pdf-win-msg", "Nao foi possivel carregar o PDF."),
+      newTabBtn
     );
-    closeBtn.focus();
   });
+
+  win.append(titleBar, winBody, winFooter);
+  document.body.append(win);
+
+  function clampX(x) { return Math.max(0, Math.min(x, window.innerWidth - 120)); }
+  function clampY(y) { return Math.max(0, Math.min(y, window.innerHeight - 40)); }
+
+  function applyGeometry() {
+    if (isMaximized) {
+      win.style.cssText = "left:0;top:0;width:100vw;height:100dvh;";
+      win.classList.add("pdf-win--max");
+      win.classList.remove("pdf-win--min");
+    } else if (isMinimized) {
+      win.style.cssText = `left:${clampX(winX)}px;top:${clampY(winY)}px;width:${winW}px;`;
+      win.classList.add("pdf-win--min");
+      win.classList.remove("pdf-win--max");
+    } else {
+      win.style.cssText = `left:${clampX(winX)}px;top:${clampY(winY)}px;width:${winW}px;height:${winH}px;`;
+      win.classList.remove("pdf-win--max", "pdf-win--min");
+    }
+  }
+
+  function persist() {
+    savePdfWinState({ x: winX, y: winY, w: winW, h: winH, maximized: isMaximized });
+  }
+
+  function toggleMinimize() {
+    isMinimized = !isMinimized;
+    if (isMinimized) isMaximized = false;
+    applyGeometry();
+  }
+
+  function toggleMaximize() {
+    if (isMinimized) isMinimized = false;
+    isMaximized = !isMaximized;
+    applyGeometry();
+    persist();
+  }
 
   function close() {
     document.removeEventListener("keydown", onKeyDown);
-    overlay.remove();
-  }
-  function onKeyDown(ev) {
-    if (ev.key === "Escape") close();
+    ro.disconnect();
+    win.remove();
+    persist();
+    if (isObjectUrl) URL.revokeObjectURL(safeUrl);
   }
 
-  overlay.addEventListener("click", (ev) => { if (ev.target === overlay) close(); });
+  function onKeyDown(ev) { if (ev.key === "Escape") close(); }
   document.addEventListener("keydown", onKeyDown);
 
-  box.append(title, frame, node("div", "pdf-actions", [newTabBtn, closeBtn]));
-  overlay.append(box);
-  document.body.append(overlay);
-  closeBtn.focus();
+  // Arrastar pela barra de titulo
+  let dragging = false, dStartX, dStartY, dOrigX, dOrigY;
+  titleBar.addEventListener("pointerdown", (ev) => {
+    if (isMaximized) return;
+    if (ev.target === minBtn || ev.target === maxBtn || ev.target === closeWinBtn) return;
+    dragging = true;
+    dStartX = ev.clientX; dStartY = ev.clientY;
+    dOrigX = winX; dOrigY = winY;
+    titleBar.setPointerCapture(ev.pointerId);
+    ev.preventDefault();
+  });
+  titleBar.addEventListener("pointermove", (ev) => {
+    if (!dragging) return;
+    winX = dOrigX + (ev.clientX - dStartX);
+    winY = dOrigY + (ev.clientY - dStartY);
+    applyGeometry();
+  });
+  titleBar.addEventListener("pointerup", () => {
+    if (!dragging) return;
+    dragging = false;
+    persist();
+  });
+
+  // Rastrear redimensionamento manual (resize:both CSS)
+  const ro = new ResizeObserver(([entry]) => {
+    if (isMaximized || isMinimized) return;
+    winW = Math.round(entry.contentRect.width);
+    winH = Math.round(entry.contentRect.height);
+    persist();
+  });
+  ro.observe(win);
+
+  applyGeometry();
+  closeWinBtn.focus();
+}
+
+// Dispatcher: abre PDF local (IndexedDB) ou URL externa na janela flutuante.
+async function openDocument(item) {
+  const name = String(item.name || "PDF");
+  if (item.source === "local" && item.localId) {
+    const rec = await getPdfBlob(item.localId);
+    if (rec?.blob) {
+      const objectUrl = URL.createObjectURL(rec.blob);
+      openPdfWindow(objectUrl, name, true);
+    } else if (String(item.url || "").trim()) {
+      openPdfWindow(item.url, name, false);
+    } else {
+      openPdfUnavailableDialog(name);
+    }
+  } else {
+    const url = String(item.url || "").trim();
+    if (!url) return;
+    openPdfWindow(url, name, false);
+  }
+}
+
+// Abre PDF em nova aba: para local, gera object URL sob demanda.
+async function openDocumentInNewTab(item) {
+  if (item.source === "local" && item.localId) {
+    const rec = await getPdfBlob(item.localId);
+    if (rec?.blob) {
+      const objectUrl = URL.createObjectURL(rec.blob);
+      const win = window.open(objectUrl, "_blank", "noopener");
+      if (win) win.opener = null;
+      // Revogar apos breve delay (aba ja iniciou o carregamento)
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
+    } else if (String(item.url || "").trim()) {
+      openPdfInNewTab(item.url);
+    } else {
+      openPdfUnavailableDialog(item.name || "PDF");
+    }
+  } else {
+    openPdfInNewTab(item.url);
+  }
 }
 
 function openPdfInNewTab(url) {
@@ -2070,6 +2395,11 @@ function openPdfInNewTab(url) {
   const win = window.open(safeUrl, "_blank", "noopener");
   if (win) win.opener = null;
 }
+
+function openPdfUnavailableDialog(name) {
+  toast(`PDF "${name}" nao disponivel neste navegador. Reenvie o arquivo neste dispositivo.`);
+}
+// ─────────────────────────────────────────────────────────────────────────────
 
 
 function sectionTitle(title, subtitle) {

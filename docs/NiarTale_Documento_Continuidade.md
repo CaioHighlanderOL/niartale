@@ -776,15 +776,27 @@ Impacto em calculos:
 
 ```js
 {
-  id,    // uid("doc")
-  name,  // rotulo amigavel
-  url    // URL externa do PDF
+  id,        // uid("doc")
+  name,      // rotulo amigavel
+  source,    // "local" | "url"  (inferido se ausente)
+  url,       // URL externa (source:"url") ou vazia (source:"local")
+  localId,   // chave no IndexedDB "niartale-media" / store "pdfs"
+  size,      // bytes (metadado; 0 se URL)
+  mime       // "application/pdf" (local) ou "" (url)
 }
 ```
 
-Campos legados `storagePath`/`size`/`uploadedAt` podem existir em fichas antigas; sao preservados pelo spread em `normalizeDocumentItem` mas nao sao usados por nenhuma logica.
+Campos legados `storagePath`/`uploadedAt` podem existir em fichas antigas; sao preservados pelo spread em `normalizeDocumentItem` mas nao sao usados por nenhuma logica.
 
-A aba Geral possui um card "Documentos (PDF)" com ate 10 anexos por ficha. O usuario anexa PDFs por URL externa; abertura em popup (`iframe`) com fallback "Abrir em nova aba". Fichas antigas sem `documents` normalizam para `[]` (lazy, sem migracao eager). Firebase Storage **nao e usado** (plano Spark). O recurso nao altera `excelCalc` nem qualquer formula.
+**Binario:** armazenado em `IndexedDB` dedicado (`niartale-media`, store `pdfs`, keyPath `localId`, indice `characterId`). O Firestore guarda apenas metadados — nunca o binario nem base64.
+
+**A aba Geral** possui um card "Documentos (PDF)" com ate 10 anexos por ficha. Dois fluxos coexistem:
+- **PDF por URL**: colar link externo; comportamento original preservado.
+- **PDF local**: upload direto via `<input type=file>`; binario salvo em IndexedDB.
+
+**Abertura:** janela flutuante (`openPdfWindow`) — mover (barra arrastavel), redimensionar (resize:both CSS), minimizar, maximizar, fechar, "Nova aba". Para PDF local, gera `URL.createObjectURL(blob)` e revoga ao fechar. Para PDF local indisponivel (outro dispositivo / dados apagados), exibe mensagem + fallback URL se existir. Estado da janela (pos/tamanho) persiste em `localStorage` (`niartale.pdfWindow`).
+
+Fichas antigas sem `documents` normalizam para `[]` (lazy, sem migracao eager). Firebase Storage **nao e usado** (plano Spark). O recurso nao altera `excelCalc` nem qualquer formula.
 
 ### 7.10 Campos Customizados
 
